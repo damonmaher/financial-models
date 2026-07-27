@@ -1,64 +1,164 @@
 <!DOCTYPE HTML>
-<!--
-	Solid State by HTML5 UP
-	html5up.net | @ajlkn
-	Free for personal and commercial use under the CCA 3.0 license (html5up.net/license)
--->
 <html>
-	<head>
-		<title>Elements - Solid State by HTML5 UP</title>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-		<link rel="stylesheet" href="assets/css/main.css" />
-		<noscript><link rel="stylesheet" href="assets/css/noscript.css" /></noscript>
-	</head>
-	<body class="is-preload">
+    <head>
+        <title>Hidden Markov Model — Explanation | Mahini & Maher Research</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+        <link rel="stylesheet" href="assets/css/main.css" />
+        <noscript><link rel="stylesheet" href="assets/css/noscript.css" /></noscript>
+    </head>
+    <body class="is-preload">
 
-		<!-- Page Wrapper -->
-			<div id="page-wrapper">
+        <!-- Page Wrapper -->
+        <div id="page-wrapper">
 
-				<!-- Header -->
-					<header id="header">
-						<h1><a href="index.html">Solid State</a></h1>
-						<nav>
-							<a href="#menu">Menu</a>
-						</nav>
-					</header>
+            <!-- Header -->
+            <header id="header">
+                <h1><a href="index.html">Mahini & Maher Research</a></h1>
+                <nav>
+                    <a href="#menu">Menu</a>
+                </nav>
+            </header>
 
-				<!-- Menu -->
-					<nav id="menu">
-						<div class="inner">
-							<h2>Menu</h2>
-							<ul class="links">
-								<li><a href="index.html">Home</a></li>
-								<li><a href="generic.html">Generic</a></li>
-								<li><a href="elements.html">Elements</a></li>
-								<li><a href="#">Log In</a></li>
-								<li><a href="#">Sign Up</a></li>
-							</ul>
-							<a href="#" class="close">Close</a>
-						</div>
-					</nav>
+            <!-- Menu -->
+            <nav id="menu">
+                <div class="inner">
+                    <h2>Menu</h2>
+                    <ul class="links">
+                        <li><a href="index.html">Home</a></li>
+                        <li><a href="generic.html">About</a></li>
+                        <li><a href="elements.html">Model Explanation</a></li>
+                    </ul>
+                    <a href="#" class="close">Close</a>
+                </div>
+            </nav>
 
-				<!-- Wrapper -->
-					<section id="wrapper">
-						<header>
-							<div class="inner">
-								<h2>Elements</h2>
-								<p>Phasellus non pulvinar erat. Fusce tincidunt nisl eget ipsum.</p>
-							</div>
-						</header>
+            <!-- Wrapper -->
+            <section id="wrapper">
+                <header>
+                    <div class="inner">
+                        <h2>Hidden Markov Model — Explanation</h2>
+                        <p>A clear, intuitive overview of how our regime‑detection model works.</p>
+                    </div>
+                </header>
 
-						<!-- Content -->
-							<div class="wrapper">
-								<div class="inner">
+                <!-- Content -->
+                <div class="wrapper">
+                    <div class="inner">
 
-									<section>
-										<h3 class="major">Text</h3>
-										<p>This is <b>bold</b> and this is <strong>strong</strong>. This is <i>italic</i> and this is <em>emphasized</em>.
-										This is <sup>superscript</sup> text and this is <sub>subscript</sub> text.
-										This is <u>underlined</u> and this is code: <code>for (;;) { ... }</code>. Finally, <a href="#">this is a link</a>.</p>
-										<h4>Blockquote</h4>
+                        <section>
+                            <h3 class="major">What is a Hidden Markov Model?</h3>
+                            <p>A Hidden Markov Model (HMM) is a statistical model used to identify patterns that are not directly observable. In financial markets, this means detecting underlying “regimes” — such as trending, mean‑reverting, or volatile environments — based on observable price behavior.</p>
+
+                            <p>Instead of trying to guess the market’s state directly, the HMM infers it from the data using probabilities. This makes it extremely useful for understanding market structure and anticipating shifts in behavior.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">Why Use an HMM for Markets?</h3>
+                            <p>Markets behave differently depending on the underlying regime. Trend‑following works well in trending markets, but poorly in choppy ones. Mean‑reversion thrives in stable environments but fails during breakouts.</p>
+
+                            <p>The HMM helps identify these conditions by analyzing returns, volatility, or other features and determining which regime the market is most likely in. This allows traders and analysts to adapt their strategies accordingly.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">How the Model Works (Intuitive Overview)</h3>
+                            <p>The HMM assumes the market is always in one of several hidden states. Each state has its own characteristics — for example, low volatility, high volatility, or trending behavior.</p>
+
+                            <p>The model looks at observable data (like returns) and determines:</p>
+                            <ul>
+                                <li>Which state the market is likely in right now</li>
+                                <li>How likely it is to transition to another state</li>
+                                <li>How each state typically behaves</li>
+                            </ul>
+
+                            <p>Over time, this creates a clear picture of how the market moves between regimes.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">States and Regimes</h3>
+                            <p>In our implementation, each state represents a distinct market condition. For example:</p>
+                            <ul>
+                                <li><strong>State 1 — Stable / Low Volatility</strong></li>
+                                <li><strong>State 2 — Trending / Directional</strong></li>
+                                <li><strong>State 3 — High Volatility / Chaotic</strong></li>
+                            </ul>
+
+                            <p>The model learns these states automatically from the data — we do not manually define them. This makes the model flexible and adaptive to different market environments.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">Training the Model</h3>
+                            <p>The HMM is trained on historical market data. During training, it learns:</p>
+                            <ul>
+                                <li>How often each state occurs</li>
+                                <li>How likely the market is to move from one state to another</li>
+                                <li>What each state “looks like” in terms of returns or volatility</li>
+                            </ul>
+
+                            <p>Once trained, the model can analyze new data and determine the current regime in real time.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">Interpreting the Output</h3>
+                            <p>The model produces two key outputs:</p>
+                            <ul>
+                                <li><strong>Most likely current state</strong> — the regime the market is in right now</li>
+                                <li><strong>State probabilities</strong> — how likely each regime is at the moment</li>
+                            </ul>
+
+                            <p>These outputs help guide strategy selection, risk management, and market interpretation.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">What’s Next?</h3>
+                            <p>This explanation page will expand as we add more models and refine our HMM implementation. Future updates may include visualizations, interactive charts, and deeper breakdowns of regime behavior.</p>
+
+                            <p>To try the interactive version of the model, visit the project section on the homepage.</p>
+                        </section>
+
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- Footer -->
+            <section id="footer">
+                <div class="inner">
+                    <h2 class="major">Get in touch</h2>
+                    <p>Feel free to reach out for collaboration, questions, or model requests.</p>
+
+                    <ul class="contact">
+                        <li class="icon solid fa-user">
+                            <strong>Damon Maher</strong><br />
+                            Phone: <a href="tel:5716850923">571‑685‑0923</a><br />
+                            Email: <a href="mailto:damonmaher@me.com">damonmaher@me.com</a>
+                        </li>
+                        <li class="icon solid fa-user">
+                            <strong>Alec Mahini</strong><br />
+                            Phone: <a href="tel:7039442324">703‑944‑2324</a><br />
+                            Email: <a href="mailto:alecmahini1@gmail.com">alecmahini1@gmail.com</a>
+                        </li>
+                    </ul>
+
+                    <ul class="copyright">
+                        <li>&copy; Mahini & Maher Research and Models. All rights reserved.</li>
+                        <li>Design: <a href="http://html5up.net">HTML5 UP</a></li>
+                    </ul>
+                </div>
+            </section>
+
+        </div>
+
+        <!-- Scripts -->
+        <script src="assets/js/jquery.min.js"></script>
+        <script src="assets/js/jquery.scrollex.min.js"></script>
+        <script src="assets/js/browser.min.js"></script>
+        <script src="assets/js/breakpoints.min.js"></script>
+        <script src="assets/js/util.js"></script>
+        <script src="assets/js/main.js"></script>
+
+    </body>
+</html>
 										<blockquote>Fringilla nisl. Donec accumsan interdum nisi, quis tincidunt felis sagittis eget tempus euismod. Vestibulum ante ipsum primis in faucibus vestibulum. Blandit adipiscing eu felis iaculis volutpat ac adipiscing accumsan faucibus. Vestibulum ante ipsum primis in faucibus lorem ipsum dolor sit amet nullam adipiscing eu felis.</blockquote>
 										<h4>Preformatted</h4>
 										<pre><code>i = 0;
