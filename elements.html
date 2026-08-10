@@ -34,8 +34,8 @@
             <section id="wrapper">
                 <header>
                     <div class="inner">
-                        <h2>Hidden Markov Model — Explanation</h2>
-                        <p>A clear, intuitive overview of how our regime‑detection model works.</p>
+                        <h2>How Our Hidden Markov Model Works</h2>
+                        <p>We built this model to figure out what "mode" the market is in. Here's the reasoning behind it, explained the way we'd explain it to each other.</p>
                     </div>
                 </header>
 
@@ -44,73 +44,57 @@
                     <div class="inner">
 
                         <section>
-                            <h3 class="major">What is a Hidden Markov Model?</h3>
-                            <p>A Hidden Markov Model (HMM) is a statistical model used to identify patterns that are not directly observable. In financial markets, this means detecting underlying “regimes” — such as trending, mean‑reverting, or volatile environments — based on observable price behavior.</p>
+                            <h3 class="major">What a Hidden Markov Model actually does</h3>
+                            <p>You can't directly observe what "regime" the market is in. There's no ticker for it. What you can observe is price behavior: returns, volatility, how choppy things feel day to day. A Hidden Markov Model takes that observable data and works backward to estimate the hidden state that's probably producing it.</p>
 
-                            <p>Instead of trying to guess the market’s state directly, the HMM infers it from the data using probabilities. This makes it extremely useful for understanding market structure and anticipating shifts in behavior.</p>
+                            <p>So instead of us deciding "the market looks trendy this week" based on a chart, the model assigns probabilities to a handful of underlying states and updates them as new data comes in. It's a statistical way of answering the question every trader asks anyway: what kind of market am I actually in right now?</p>
                         </section>
 
                         <section>
-                            <h3 class="major">Why Use an HMM for Markets?</h3>
-                            <p>Markets behave differently depending on the underlying regime. Trend‑following works well in trending markets, but poorly in choppy ones. Mean‑reversion thrives in stable environments but fails during breakouts.</p>
+                            <h3 class="major">Why regime matters</h3>
+                            <p>A trend-following strategy that prints money in March can bleed you dry in June, and it's not because the strategy got worse. The market changed underneath it. Trend-following needs a trend. Mean-reversion needs the opposite: a range-bound, well-behaved market where things snap back after they stretch too far.</p>
 
-                            <p>The HMM helps identify these conditions by analyzing returns, volatility, or other features and determining which regime the market is most likely in. This allows traders and analysts to adapt their strategies accordingly.</p>
+                            <p>Most people figure out which regime they're in after the fact, once the drawdown makes it obvious. The point of the HMM is to give us that read earlier, using returns and volatility as the inputs, so we can size or switch strategies before the regime shift shows up in our P&L.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">How the Model Works (Intuitive Overview)</h3>
-                            <p>The HMM assumes the market is always in one of several hidden states. Each state has its own characteristics — for example, low volatility, high volatility, or trending behavior.</p>
+                            <h3 class="major">The intuition, without the math</h3>
+                            <p>The model assumes the market is always sitting in one of a few hidden states, and that each state has its own personality. One might be quiet and low-volatility. Another might be sharply trending. A third might be the kind of chaotic, whipsaw environment where nothing behaves.</p>
 
-                            <p>The model looks at observable data (like returns) and determines:</p>
+                            <p>Feed it a history of returns and it answers three questions at once: which state we're probably in right now, how likely we are to flip into a different one soon, and what returns typically look like once we're there. Run that same question every day and you get a rolling picture of how the market drifts between regimes over time, not a single snapshot but a path.</p>
+                        </section>
+
+                        <section>
+                            <h3 class="major">The three states, in practice</h3>
+                            <p>In our current build, the model settles on three states that roughly map to conditions any trader would recognize:</p>
                             <ul>
-                                <li>Which state the market is likely in right now</li>
-                                <li>How likely it is to transition to another state</li>
-                                <li>How each state typically behaves</li>
+                                <li><strong>Stable, low volatility:</strong> quiet, grinding markets</li>
+                                <li><strong>Trending, directional:</strong> clear momentum, one way or the other</li>
+                                <li><strong>High volatility, chaotic:</strong> the kind of tape that chews up both trend and mean-reversion strategies</li>
                             </ul>
 
-                            <p>Over time, this creates a clear picture of how the market moves between regimes.</p>
+                            <p>We didn't hand-label these. The model finds them on its own by clustering how returns behave, which is the whole point: it adapts to whatever the data actually looks like instead of us imposing a definition of "trending" that might be wrong.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">States and Regimes</h3>
-                            <p>In our implementation, each state represents a distinct market condition. For example:</p>
-                            <ul>
-                                <li><strong>State 1 — Stable / Low Volatility</strong></li>
-                                <li><strong>State 2 — Trending / Directional</strong></li>
-                                <li><strong>State 3 — High Volatility / Chaotic</strong></li>
-                            </ul>
+                            <h3 class="major">Training it</h3>
+                            <p>We train the HMM on historical price data, and in that process it works out three things at once: how often each state tends to show up, how likely the market is to jump from one state to another, and what returns and volatility typically look like once you're inside a given state.</p>
 
-                            <p>The model learns these states automatically from the data — we do not manually define them. This makes the model flexible and adaptive to different market environments.</p>
+                            <p>After that, it's fast. New data comes in, and the model updates its read on the current regime almost immediately.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">Training the Model</h3>
-                            <p>The HMM is trained on historical market data. During training, it learns:</p>
-                            <ul>
-                                <li>How often each state occurs</li>
-                                <li>How likely the market is to move from one state to another</li>
-                                <li>What each state “looks like” in terms of returns or volatility</li>
-                            </ul>
+                            <h3 class="major">Reading the output</h3>
+                            <p>The model hands back two things. First, its best guess at the current state: the single most likely regime right now. Second, the full probability breakdown across all three states, which matters more than it sounds like it should.</p>
 
-                            <p>Once trained, the model can analyze new data and determine the current regime in real time.</p>
+                            <p>A regime call at 90% confidence and one at 40% confidence should not lead to the same decision, even if they're pointing at the same state. That distinction is what actually drives how we think about strategy selection and risk from here.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">Interpreting the Output</h3>
-                            <p>The model produces two key outputs:</p>
-                            <ul>
-                                <li><strong>Most likely current state</strong> — the regime the market is in right now</li>
-                                <li><strong>State probabilities</strong> — how likely each regime is at the moment</li>
-                            </ul>
+                            <h3 class="major">What we're working on next</h3>
+                            <p>This page will keep growing as we refine the HMM and add new models alongside it. We're planning to add charts so you can actually see the regime shifts instead of just reading about them, along with a closer look at how each state behaves historically.</p>
 
-                            <p>These outputs help guide strategy selection, risk management, and market interpretation.</p>
-                        </section>
-
-                        <section>
-                            <h3 class="major">What’s Next?</h3>
-                            <p>This explanation page will expand as we add more models and refine our HMM implementation. Future updates may include visualizations, interactive charts, and deeper breakdowns of regime behavior.</p>
-
-                            <p>To try the interactive version of the model, visit the project section on the homepage.</p>
+                            <p>Want to play with the interactive version? Head back to the homepage and check out the project section.</p>
                         </section>
 
                     </div>
@@ -155,5 +139,3 @@
 
     </body>
 </html>
-
-
