@@ -3411,6 +3411,31 @@ input, select, textarea {
 				width: 2.25em;
 			}
 
+		#banner .banner-logo {
+			-moz-transition: opacity 2s ease, -moz-transform 1s ease;
+			-webkit-transition: opacity 2s ease, -webkit-transform 1s ease;
+			-ms-transition: opacity 2s ease, -ms-transform 1s ease;
+			transition: opacity 2s ease, transform 1s ease;
+			-moz-transform: translateY(0);
+			-webkit-transform: translateY(0);
+			-ms-transform: translateY(0);
+			transform: translateY(0);
+			opacity: 1;
+			display: block;
+			width: 100%;
+			max-width: 32em;
+			height: auto;
+			margin: 0 0 0.8em 0;
+		}
+
+			body.is-preload #banner .banner-logo {
+				-moz-transform: translateY(0.5em);
+				-webkit-transform: translateY(0.5em);
+				-ms-transform: translateY(0.5em);
+				transform: translateY(0.5em);
+				opacity: 0;
+			}
+
 		#banner h2 {
 			-moz-transition: opacity 0.5s ease, -moz-transform 0.5s ease, -moz-filter 0.25s ease;
 			-webkit-transition: opacity 0.5s ease, -webkit-transform 0.5s ease, -webkit-filter 0.25s ease;
@@ -3503,6 +3528,11 @@ input, select, textarea {
 					#banner .logo .icon {
 						font-size: 1.5em;
 					}
+
+				#banner .banner-logo {
+					margin: 0 0 1em 0;
+					max-width: 20em;
+				}
 
 				#banner h2 {
 					font-size: 1.5em;
