@@ -3422,10 +3422,14 @@ input, select, textarea {
 			transform: translateY(0);
 			opacity: 1;
 			display: block;
+			box-sizing: border-box;
 			width: 100%;
 			max-width: 32em;
 			height: auto;
 			margin: 0 0 0.8em 0;
+			padding: 1.25em 1.75em;
+			background-color: #ffffff;
+			border-radius: 10px;
 		}
 
 			body.is-preload #banner .banner-logo {
