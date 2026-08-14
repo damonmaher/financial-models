@@ -1,0 +1,27 @@
+-- Drift Intervals --
+
+Severely Bullish: [>0.3]
+Bullish: [0.15, 0.3]
+Slightly Bullish: [0.05, 0.15]
+Stagnant: [-0.05, 0.05]
+Slightly Bearish: [-0.05, -0.15]
+Bearish: [-0.15, -0.3]
+Severly Bearish: [<-0.3]
+
+-- Indicators --
+
+Vol-of-Vol:
+[<0.30] - Slightly bullish grind
+[0.30, 0.60] - Standard transitions and trends
+[0.60] - Severely bearish + melt-ups
+
+Mean Reversion:
+[<2.0] - Bearish with heavy residuals
+[2.0, 5.0] - Standard market
+[>5.0] - Bullish, where every dip is bought back up
+
+Long-Term Variance:
+[<0.020] - Calm markets or steadily bullish
+[0.020, 0.040] - Healthy consolidation
+[0.040, 0.090] - Bear market trends
+[>0.090] - Crashes and structural shocks
