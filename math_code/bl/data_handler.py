@@ -86,16 +86,21 @@ def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> 
 
 def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
     """
-    Best-effort market cap lookup per ticker. Returns None for any ticker
-    where yfinance doesn't expose a market cap (e.g. some ETFs/indices) so
-    the caller can decide how to handle the gap.
+    Best-effort market cap lookup per ticker using yfinance fast_info
+    to bypass cloud IP rate limits on quoteSummary endpoints.
     """
     caps: dict[str, float | None] = {}
     for t in tickers:
         cap = None
         try:
-            info = yf.Ticker(t).get_info()
-            cap = info.get("marketCap")
+            ticker = yf.Ticker(t)
+            # fast_info['market_cap'] bypasses the blocked quoteSummary scraper
+            cap = ticker.fast_info.get("market_cap")
+
+            # Fallback to .info if fast_info fails
+            if cap is None or cap <= 0:
+                info = ticker.info
+                cap = info.get("marketCap")
         except Exception:
             cap = None
         caps[t] = cap
