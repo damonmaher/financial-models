@@ -64,20 +64,24 @@ global_fig.update_layout(**dark_layout("Enter a ticker to begin"))
 def req_csv():
     ticker_object = yf.Ticker(ticker_input.value)
 
-    #Set current stock price
+    # Set current stock price using lightweight fast_info
     try:
-        s_nought = ticker_object.history(period="1d")['Close'].iloc[-1]
+        s_nought = ticker_object.fast_info.get("last_price")
+        if s_nought is None or np.isnan(s_nought):
+            s_nought = ticker_object.history(period="1d")["Close"].iloc[-1]
 
-        # fetch dividend yield q
-        info = ticker_object.info
-        q = info.get('dividendYield', 0.0)
-        if q is None:
-            q = 0.0
-
-    except Exception:
-        print("Incorrect Ticker Entered")
-        ui.notify('Incorrect ticker entered.', type='negative')
+    except Exception as e:
+        print(f"Error fetching price for {ticker_input.value}: {e}")
+        ui.notify("Incorrect ticker entered or price unavailable.", type="negative")
         return None, None
+
+    # Fetch dividend yield q safely without crashing if info is 403-blocked
+    q = 0.0
+    try:
+        info = ticker_object.info
+        q = info.get("dividendYield", 0.0) or 0.0
+    except Exception:
+        q = 0.0  # Fallback to 0.0 yield if Yahoo blocks quoteSummary
 
     ui.notify(f'Fetching option chain for {ticker_input.value}...')
     stats_card.set_visibility(False)
