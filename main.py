@@ -1,3 +1,4 @@
+import os
 from nicegui import ui
 
 # 1. The Home Route (The Spoke's Landing Page)
@@ -26,5 +27,6 @@ def hsv_page():
     ui.label('Heston Stochastic Volatility Application').classes('text-xl')
     ui.label('Live Python logic goes here.')
 
-# 5. The Server Configuration (Required for Hugging Face)
-ui.run(host='0.0.0.0', port=7860)
+# 5. Dynamic Server Configuration for Render
+port = int(os.environ.get('PORT', 10000))
+ui.run(host='0.0.0.0', port=port, reload=False)
