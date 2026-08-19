@@ -1,36 +1,124 @@
+"""
+data_handler.py
+
+Handles all market-data plumbing for the Black-Litterman optimizer:
+  - pulling historical prices from yfinance
+  - building the (annualized) covariance matrix
+  - pulling market caps and turning them into market-implied weights (w_mkt)
+
+Nothing in this module knows about NiceGUI or the optimization math -
+it only produces plain numpy/pandas objects that black_litterman.py and
+optimizer.py consume.
+"""
+
 from __future__ import annotations
 
+import numpy as np
+import pandas as pd
 import yfinance as yf
 
 
+class DataFetchError(Exception):
+    """Raised when we can't build a usable dataset for the requested tickers."""
+
+
+def fetch_price_history(tickers: list[str], period: str = "3y", interval: str = "1wk") -> pd.DataFrame:
+    """
+    Download adjusted close prices for a list of tickers.
+
+    Returns a DataFrame indexed by date, one column per ticker, with any
+    rows containing NaNs dropped (keeps the covariance matrix well-defined
+    across a common date range).
+    """
+    if not tickers:
+        raise DataFetchError("No tickers were provided.")
+
+    raw = yf.download(
+        tickers,
+        period=period,
+        interval=interval,
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+    )
+
+    if raw is None or raw.empty:
+        raise DataFetchError(
+            f"yfinance returned no data for {tickers}. Check the ticker symbols."
+        )
+
+    # yfinance returns a MultiIndex column frame for >1 ticker, a flat frame for 1
+    if isinstance(raw.columns, pd.MultiIndex):
+        if "Close" not in raw.columns.get_level_values(0):
+            raise DataFetchError("Downloaded data did not contain a 'Close' column.")
+        prices = raw["Close"]
+    else:
+        prices = raw[["Close"]]
+        prices.columns = tickers
+
+    prices = prices.dropna(how="all").dropna(axis=0, how="any")
+
+    missing = [t for t in tickers if t not in prices.columns]
+    if missing:
+        raise DataFetchError(f"No price data returned for: {', '.join(missing)}")
+
+    if len(prices) < 10:
+        raise DataFetchError(
+            "Not enough overlapping price history across the selected tickers."
+        )
+
+    return prices[tickers]
+
+
+def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Compute log returns and the annualized sample covariance matrix.
+
+    periods_per_year defaults to 52 for weekly bars ('1wk' interval above).
+    """
+    log_returns = np.log(price_data / price_data.shift(1)).dropna()
+    if log_returns.empty:
+        raise DataFetchError("Could not compute returns from the downloaded price history.")
+
+    cov_matrix = log_returns.cov() * periods_per_year
+    return cov_matrix, log_returns
+
+
 def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
-  """Best-effort market cap lookup per ticker using robust fast_info attribute
+    """
+    Best-effort market cap lookup per ticker. Returns None for any ticker
+    where yfinance doesn't expose a market cap (e.g. some ETFs/indices) so
+    the caller can decide how to handle the gap.
+    """
+    caps: dict[str, float | None] = {}
+    for t in tickers:
+        cap = None
+        try:
+            info = yf.Ticker(t).get_info()
+            cap = info.get("marketCap")
+        except Exception:
+            cap = None
+        caps[t] = cap
+    return caps
 
-  and key resolution.
-  """
-  caps: dict[str, float | None] = {}
-  for t in tickers:
-    cap = None
-    try:
-      ticker = yf.Ticker(t)
-      fast = ticker.fast_info
 
-      # Try attribute access
-      cap = getattr(fast, "market_cap", None) or getattr(
-          fast, "marketCap", None
-      )
+def compute_market_weights(caps: dict[str, float | None]) -> tuple[np.ndarray, list[str], bool]:
+    """
+    Convert a {ticker: market_cap} dict into a market-cap-weighted vector
+    that sums to 1, in the same order as caps.keys().
 
-      # Try dictionary access
-      if cap is None and hasattr(fast, "get"):
-        cap = fast.get("market_cap") or fast.get("marketCap")
+    Returns (weights, tickers_in_order, used_fallback) where used_fallback
+    is True if one or more market caps were missing and we fell back to
+    equal weighting across the whole universe.
+    """
+    tickers = list(caps.keys())
+    values = [caps[t] for t in tickers]
 
-      # Fallback to info lookup
-      if cap is None or cap <= 0:
-        info = ticker.info
-        cap = info.get("marketCap")
-    except Exception as e:
-      print(f"Error fetching market cap for {t}: {e}")
-      cap = None
+    if any(v is None or v <= 0 for v in values):
+        n = len(tickers)
+        weights = np.full(n, 1.0 / n)
+        return weights, tickers, True
 
-    caps[t] = cap
-  return caps
+    values_arr = np.array(values, dtype=float)
+    weights = values_arr / values_arr.sum()
+    return weights, tickers, False
