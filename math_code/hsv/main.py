@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
-import time
+import asyncio
 import datetime
 
 import set_params
@@ -12,7 +12,7 @@ import bs
 import fft
 
 from pathlib import Path
-from nicegui import ui
+from nicegui import ui, run
 
 #import set_params
 
@@ -44,49 +44,33 @@ def dark_layout(title):
         margin=dict(l=10, r=10, t=50, b=10),
     )
 
-## ---------- yfinance hardening -----------
-## yfinance (0.2.60+) already impersonates Chrome via curl_cffi internally
-## by default - it builds its own `requests.Session(impersonate="chrome")`
-## whenever you DON'T pass a session. Passing an external curl_cffi session
-## in ourselves conflicts with yfinance's own cookie/crumb handshake and
-## causes info calls to silently return None instead of raising, which is
-## worse than doing nothing. So: don't touch sessions at all, just retry
-## with backoff on top of yfinance's built-in impersonation, since the
-## quoteSummary/options endpoints are still the most rate-limit-sensitive
-## ones even with impersonation working correctly.
+## ---------- Non-blocking yfinance retry helper -----------
+## IMPORTANT: NiceGUI runs on a single asyncio event loop shared by every
+## connected user. A synchronous time.sleep() inside a plain on_click
+## callback blocks that whole loop - which is why a rate-limit backoff of
+## a few minutes made the ENTIRE APP freeze for everyone, not just the one
+## session waiting on data. The fix: run every blocking yfinance call in a
+## worker thread via run.io_bound, and use asyncio.sleep() (non-blocking)
+## for the backoff delay between attempts. This keeps the event loop free
+## to serve other users/requests while a retry is waiting.
 
-def yf_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
-    """Call func(*args, **kwargs), retrying with exponential backoff on any
-    exception (429s, empty JSON bodies, transient connection errors, etc).
-    Re-raises the last exception if every attempt fails."""
+async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, label="request", **kwargs):
+    """Await func(*args, **kwargs) in a worker thread, retrying with capped
+    exponential backoff on failure. Notifies the user (without blocking the
+    event loop) while it waits, so a retry looks like progress rather than
+    a frozen page. Re-raises the last exception if every attempt fails."""
     last_exc = None
     for attempt in range(retries):
         try:
-            return func(*args, **kwargs)
+            return await run.io_bound(func, *args, **kwargs)
         except Exception as e:
             last_exc = e
             if attempt < retries - 1:
-                time.sleep(base_delay * (2 ** attempt))
-    raise last_exc
-
-
-def yf_retry_slow(func, *args, retries=5, base_delay=8.0, **kwargs):
-    """Same as yf_retry, but with a much longer backoff schedule for the
-    options endpoints specifically (.options / .option_chain()). These get
-    genuinely rate-limited (a real YFRateLimitError, not a silent block)
-    under burst traffic, and Yahoo's cooldown window for it tends to run
-    30-60s - a short backoff just re-triggers the limit on every retry.
-    Delays: ~8s, 16s, 32s, 64s (capped) between attempts."""
-    last_exc = None
-    for attempt in range(retries):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            last_exc = e
-            if attempt < retries - 1:
-                delay = min(base_delay * (2 ** attempt), 60)
-                print(f"Rate limited, waiting {delay:.0f}s before retry {attempt + 2}/{retries}...")
-                time.sleep(delay)
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                print(f"[{label}] attempt {attempt + 1}/{retries} failed ({type(e).__name__}: {e}); "
+                      f"waiting {delay:.0f}s before retry")
+                ui.notify(f'{label}: rate limited, retrying in {delay:.0f}s...', type='warning')
+                await asyncio.sleep(delay)
     raise last_exc
 
 
@@ -107,26 +91,25 @@ global_fig.update_layout(**dark_layout("Enter a ticker to begin"))
 
 ## -------- Event Listeners --------
 
-def req_csv():
+async def req_csv():
     ticker_object = yf.Ticker(ticker_input.value)
 
     #Set current stock price
     try:
-        hist = yf_retry(ticker_object.history, period="1d")
+        hist = await async_retry(ticker_object.history, period="1d",
+                                  retries=3, base_delay=2.0, max_delay=10.0, label="price history")
         if hist is None or hist.empty:
             raise ValueError(f"No price history returned for '{ticker_input.value}'")
         s_nought = hist['Close'].iloc[-1]
 
         # Dividend yield: computed from trailing-12-month dividends (the
         # actions/chart endpoint) divided by current price, instead of
-        # pulling dividendYield from get_info()/quoteSummary. Yahoo appears
-        # to be blocking quoteSummary outright for this host's IP - every
-        # retry returns None rather than a 429/timeout, which points to an
-        # IP-level block rather than a transient rate limit, so no amount
-        # of retrying fixes it. Dividends history isn't behind that gate.
+        # pulling dividendYield from get_info()/quoteSummary, which is
+        # blocked outright for this host's IP.
         q = 0.0
         try:
-            dividends = yf_retry(ticker_object.get_dividends)
+            dividends = await async_retry(ticker_object.get_dividends,
+                                           retries=2, base_delay=2.0, max_delay=6.0, label="dividends")
             if dividends is not None and not dividends.empty:
                 tz = dividends.index.tz
                 cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
@@ -138,9 +121,6 @@ def req_csv():
             q = 0.0
 
     except Exception as e:
-        # Log + surface the REAL error instead of always blaming the ticker.
-        # A 429 / blocked-request / empty-response error was previously
-        # being mislabeled as "Incorrect Ticker Entered".
         print(f"yfinance error on '{ticker_input.value}': {type(e).__name__}: {e}")
         ui.notify(f'Data fetch failed: {type(e).__name__}: {e}', type='negative')
         return None, None
@@ -150,7 +130,8 @@ def req_csv():
 
     #Extract expiration dates
     try:
-        expirations = yf_retry_slow(lambda: ticker_object.options)
+        expirations = await async_retry(lambda: ticker_object.options,
+                                         retries=4, base_delay=6.0, max_delay=30.0, label="option expirations")
     except Exception as e:
         print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
         ui.notify(f'Could not fetch option expirations (rate limited): {e}', type='negative')
@@ -178,11 +159,15 @@ def req_csv():
     frames = []
 
     #Loop through all expirations
-    for expiry in num_expirations:
+    for i, expiry in enumerate(num_expirations):
         try:
-            #Get a specific chain (retried + backed-off; this endpoint is
-            #the most rate-limit-sensitive one yfinance exposes)
-            chain = yf_retry(ticker_object.option_chain, expiry)
+            #Get a specific chain. Bounded backoff (max 4 attempts, capped
+            #at 30s) - this is the most rate-limit-sensitive endpoint
+            #yfinance exposes, and a burst of 5 sequential calls is enough
+            #to trip it on its own.
+            chain = await async_retry(ticker_object.option_chain, expiry,
+                                       retries=4, base_delay=6.0, max_delay=30.0,
+                                       label=f"chain {expiry}")
 
             #Label calls and puts
             calls = chain.calls.copy()
@@ -207,8 +192,9 @@ def req_csv():
             clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
             frames.append(full_chain[clean_columns])
 
-            #Pause to prevent rate limits being reached
-            time.sleep(1)
+            #Small pause between expirations, non-blocking
+            if i < len(num_expirations) - 1:
+                await asyncio.sleep(2)
 
         except Exception as e:
             print(f"Error fetching chain for expiry {expiry}: {type(e).__name__}: {e}")
@@ -240,7 +226,13 @@ def req_csv():
 
     #Remove quotes with an ask price of 0
     filtered_df = filtered_df[filtered_df['C_market'] > 0.01]
-    strikes_axis, target_ttms, vol_matrix, params = pipeline(filtered_df, s_nought, ticker_input.value, q)
+
+    #Calibration + FFT pricing is CPU-bound numeric work, not I/O - run it
+    #off the event loop too so a slow ticker doesn't stall other users.
+    ui.notify('Calibrating Heston surface...')
+    strikes_axis, target_ttms, vol_matrix, params = await run.cpu_bound(
+        pipeline, filtered_df, s_nought, ticker_input.value, q
+    )
     X_grid, Y_grid = np.meshgrid(strikes_axis, target_ttms)
     Z_grid = np.array(vol_matrix)
 
