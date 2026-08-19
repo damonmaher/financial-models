@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import yfinance as yf
 import asyncio
 import datetime
+import time
 
 import set_params
 import bs
@@ -74,6 +75,45 @@ async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, la
     raise last_exc
 
 
+## ---------- Caches -----------
+## The real fix for the rate limiting isn't retrying harder - it's asking
+## Yahoo less often. Option chains (180-365 DTE) and dividend yields don't
+## meaningfully change minute to minute, so repeat requests for the same
+## ticker within these windows are served from cache instead of re-hitting
+## the most rate-limit-sensitive endpoints.
+
+MAX_EXPIRATIONS = 3  # was 5 - fewer sequential option_chain() calls per fetch
+
+_DIV_YIELD_CACHE: dict[str, tuple[float, float]] = {}   # ticker -> (q, fetched_at)
+_DIV_YIELD_TTL = 7 * 24 * 60 * 60  # 1 week - yields change rarely
+
+_OPTIONS_CACHE: dict[str, tuple[list, float]] = {}       # ticker -> (frames, fetched_at)
+_OPTIONS_CACHE_TTL = 15 * 60  # 15 minutes
+
+
+async def get_cached_dividend_yield(ticker_object, ticker_symbol, s_nought):
+    cached = _DIV_YIELD_CACHE.get(ticker_symbol)
+    if cached and (time.time() - cached[1]) < _DIV_YIELD_TTL:
+        return cached[0]
+
+    q = 0.0
+    try:
+        dividends = await async_retry(ticker_object.get_dividends,
+                                       retries=2, base_delay=2.0, max_delay=6.0, label="dividends")
+        if dividends is not None and not dividends.empty:
+            tz = dividends.index.tz
+            cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
+            ttm_dividends = float(dividends[dividends.index >= cutoff].sum())
+            if s_nought > 0:
+                q = ttm_dividends / s_nought
+    except Exception as e:
+        print(f"Could not fetch dividend yield for '{ticker_symbol}': {type(e).__name__}: {e}")
+        q = 0.0
+
+    _DIV_YIELD_CACHE[ticker_symbol] = (q, time.time())
+    return q
+
+
 ## ---------- Parameters -----------
 
 cmarket_df = 0
@@ -102,108 +142,111 @@ async def req_csv():
             raise ValueError(f"No price history returned for '{ticker_input.value}'")
         s_nought = hist['Close'].iloc[-1]
 
-        # Dividend yield: computed from trailing-12-month dividends (the
-        # actions/chart endpoint) divided by current price, instead of
-        # pulling dividendYield from get_info()/quoteSummary, which is
-        # blocked outright for this host's IP.
-        q = 0.0
-        try:
-            dividends = await async_retry(ticker_object.get_dividends,
-                                           retries=2, base_delay=2.0, max_delay=6.0, label="dividends")
-            if dividends is not None and not dividends.empty:
-                tz = dividends.index.tz
-                cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
-                ttm_dividends = float(dividends[dividends.index >= cutoff].sum())
-                if s_nought > 0:
-                    q = ttm_dividends / s_nought
-        except Exception as div_e:
-            print(f"Could not compute dividend yield for '{ticker_input.value}': {type(div_e).__name__}: {div_e}")
-            q = 0.0
+        # Dividend yield: cached per ticker for a week (see
+        # get_cached_dividend_yield) since yields barely move day to day,
+        # and it's real accuracy per-ticker with near-zero repeat API cost -
+        # far better than defaulting non-dividend-payers and payers alike
+        # to one hardcoded constant.
+        q = await get_cached_dividend_yield(ticker_object, ticker_input.value, s_nought)
 
     except Exception as e:
         print(f"yfinance error on '{ticker_input.value}': {type(e).__name__}: {e}")
         ui.notify(f'Data fetch failed: {type(e).__name__}: {e}', type='negative')
         return None, None
 
-    ui.notify(f'Fetching option chain for {ticker_input.value}...')
     stats_card.set_visibility(False)
 
-    #Extract expiration dates
-    try:
-        expirations = await async_retry(lambda: ticker_object.options,
-                                         retries=4, base_delay=6.0, max_delay=30.0, label="option expirations")
-    except Exception as e:
-        print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
-        ui.notify(f'Could not fetch option expirations (rate limited): {e}', type='negative')
-        return None, None
+    #Check the options cache first - if this ticker was fetched recently,
+    #reuse it instead of hitting Yahoo's most rate-limit-sensitive endpoint
+    #again. This is what actually reduces rate-limit hits, rather than just
+    #retrying harder against the same request volume.
+    symbol_key = ticker_input.value.upper()
+    cached_frames = _OPTIONS_CACHE.get(symbol_key)
+    if cached_frames and (time.time() - cached_frames[1]) < _OPTIONS_CACHE_TTL:
+        age_min = (time.time() - cached_frames[1]) / 60
+        ui.notify(f'Using cached option chain for {symbol_key} (fetched {age_min:.0f}m ago)')
+        frames = cached_frames[0]
+    else:
+        ui.notify(f'Fetching option chain for {ticker_input.value}...')
 
-    if not expirations:
-        print("No Options Data for this Ticker")
-        ui.notify('No options data for this ticker.', type='negative')
-        return
-
-    #Limit expirations
-    today_date = datetime.date.today()
-    num_expirations = []
-
-    for exp in expirations:
-        exp_date = pd.to_datetime(exp).date()
-        days_to_exp = (exp_date-today_date).days
-
-        if 180 <= days_to_exp <= 365:
-            num_expirations.append(exp)
-
-
-    num_expirations = num_expirations[:5]
-
-    frames = []
-
-    #Loop through all expirations
-    for i, expiry in enumerate(num_expirations):
+        #Extract expiration dates
         try:
-            #Get a specific chain. Bounded backoff (max 4 attempts, capped
-            #at 30s) - this is the most rate-limit-sensitive endpoint
-            #yfinance exposes, and a burst of 5 sequential calls is enough
-            #to trip it on its own.
-            chain = await async_retry(ticker_object.option_chain, expiry,
-                                       retries=4, base_delay=6.0, max_delay=30.0,
-                                       label=f"chain {expiry}")
-
-            #Label calls and puts
-            calls = chain.calls.copy()
-            puts = chain.puts.copy()
-            calls['type'] = 'Call'
-            puts['type'] = 'Put'
-
-            #Combine calls and puts for this expiration
-            full_chain = pd.concat([calls,puts],ignore_index=True)
-
-            #Add expiration date as a column
-            full_chain['expiration'] = expiry
-
-            #Calculate TTE in years
-            expiry_date = pd.to_datetime(expiry).date()
-            today_date = pd.to_datetime('today').date()
-
-            days_to_expiry = (expiry_date - today_date).days
-            full_chain['T'] = max(days_to_expiry, 1) / 365.0
-
-            #Keep only necessary columns
-            clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
-            frames.append(full_chain[clean_columns])
-
-            #Small pause between expirations, non-blocking
-            if i < len(num_expirations) - 1:
-                await asyncio.sleep(2)
-
+            expirations = await async_retry(lambda: ticker_object.options,
+                                             retries=4, base_delay=6.0, max_delay=30.0, label="option expirations")
         except Exception as e:
-            print(f"Error fetching chain for expiry {expiry}: {type(e).__name__}: {e}")
-            continue
+            print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
+            ui.notify(f'Could not fetch option expirations (rate limited): {e}', type='negative')
+            return None, None
 
-    if not frames:
-        print("No option chain data could be retrieved for any expiration")
-        ui.notify('Could not retrieve option chain data for this ticker.', type='negative')
-        return
+        if not expirations:
+            print("No Options Data for this Ticker")
+            ui.notify('No options data for this ticker.', type='negative')
+            return
+
+        #Limit expirations
+        today_date = datetime.date.today()
+        num_expirations = []
+
+        for exp in expirations:
+            exp_date = pd.to_datetime(exp).date()
+            days_to_exp = (exp_date-today_date).days
+
+            if 180 <= days_to_exp <= 365:
+                num_expirations.append(exp)
+
+        num_expirations = num_expirations[:MAX_EXPIRATIONS]
+
+        frames = []
+
+        #Loop through all expirations
+        for i, expiry in enumerate(num_expirations):
+            try:
+                #Get a specific chain. Bounded backoff (max 4 attempts, capped
+                #at 30s) - this is the most rate-limit-sensitive endpoint
+                #yfinance exposes, and a burst of sequential calls is enough
+                #to trip it on its own.
+                chain = await async_retry(ticker_object.option_chain, expiry,
+                                           retries=4, base_delay=6.0, max_delay=30.0,
+                                           label=f"chain {expiry}")
+
+                #Label calls and puts
+                calls = chain.calls.copy()
+                puts = chain.puts.copy()
+                calls['type'] = 'Call'
+                puts['type'] = 'Put'
+
+                #Combine calls and puts for this expiration
+                full_chain = pd.concat([calls,puts],ignore_index=True)
+
+                #Add expiration date as a column
+                full_chain['expiration'] = expiry
+
+                #Calculate TTE in years
+                expiry_date = pd.to_datetime(expiry).date()
+                today_date = pd.to_datetime('today').date()
+
+                days_to_expiry = (expiry_date - today_date).days
+                full_chain['T'] = max(days_to_expiry, 1) / 365.0
+
+                #Keep only necessary columns
+                clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
+                frames.append(full_chain[clean_columns])
+
+                #Small pause between expirations, non-blocking
+                if i < len(num_expirations) - 1:
+                    await asyncio.sleep(2)
+
+            except Exception as e:
+                print(f"Error fetching chain for expiry {expiry}: {type(e).__name__}: {e}")
+                continue
+
+        if not frames:
+            print("No option chain data could be retrieved for any expiration")
+            ui.notify('Could not retrieve option chain data for this ticker.', type='negative')
+            return
+
+        #Cache the fresh frames for reuse by this or the next request
+        _OPTIONS_CACHE[symbol_key] = (frames, time.time())
 
     #Concatenate all rows into one master Data Frame
     surface_df = pd.concat(frames, ignore_index=True)
