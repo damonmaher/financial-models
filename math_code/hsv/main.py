@@ -7,6 +7,8 @@ import yfinance as yf
 import time
 import datetime
 
+from curl_cffi import requests as cffi_requests
+
 import set_params
 import bs
 import fft
@@ -44,6 +46,34 @@ def dark_layout(title):
         margin=dict(l=10, r=10, t=50, b=10),
     )
 
+## ---------- yfinance hardening (Render / cloud IPs get blocked on the
+## quoteSummary + options endpoints far more aggressively than the plain
+## chart/download endpoint, so every "info"/"options" call below goes
+## through a browser-impersonating session with retry/backoff) -----------
+
+def make_yf_session():
+    """A fresh curl_cffi session that impersonates Chrome's TLS fingerprint.
+    Yahoo's anti-bot layer keys heavily off TLS handshake shape, and plain
+    requests/urllib3 (what yfinance uses by default) gets flagged on shared
+    cloud IPs like Render's even when headers look fine."""
+    return cffi_requests.Session(impersonate="chrome")
+
+
+def yf_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
+    """Call func(*args, **kwargs), retrying with exponential backoff on any
+    exception (429s, empty JSON bodies, transient connection errors, etc).
+    Re-raises the last exception if every attempt fails."""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+    raise last_exc
+
+
 ## ---------- Parameters -----------
 
 cmarket_df = 0
@@ -62,28 +92,42 @@ global_fig.update_layout(**dark_layout("Enter a ticker to begin"))
 ## -------- Event Listeners --------
 
 def req_csv():
-    ticker_object = yf.Ticker(ticker_input.value)
+    session = make_yf_session()
+    ticker_object = yf.Ticker(ticker_input.value, session=session)
 
     #Set current stock price
     try:
-        s_nought = ticker_object.history(period="1d")['Close'].iloc[-1]
+        hist = yf_retry(ticker_object.history, period="1d")
+        if hist is None or hist.empty:
+            raise ValueError(f"No price history returned for '{ticker_input.value}'")
+        s_nought = hist['Close'].iloc[-1]
 
-        # fetch dividend yield q
-        info = ticker_object.info
+        # fetch dividend yield q (this hits the quoteSummary endpoint, the
+        # one most likely to get rate-limited/blocked on a cloud host)
+        info = yf_retry(ticker_object.get_info)
         q = info.get('dividendYield', 0.0)
         if q is None:
             q = 0.0
 
-    except Exception:
-        print("Incorrect Ticker Entered")
-        ui.notify('Incorrect ticker entered.', type='negative')
+    except Exception as e:
+        # Log + surface the REAL error instead of always blaming the ticker.
+        # A 429 / blocked-request / empty-response error was previously
+        # being mislabeled as "Incorrect Ticker Entered".
+        print(f"yfinance error on '{ticker_input.value}': {type(e).__name__}: {e}")
+        ui.notify(f'Data fetch failed: {type(e).__name__}: {e}', type='negative')
         return None, None
 
     ui.notify(f'Fetching option chain for {ticker_input.value}...')
     stats_card.set_visibility(False)
 
     #Extract expiration dates
-    expirations = ticker_object.options
+    try:
+        expirations = yf_retry(lambda: ticker_object.options)
+    except Exception as e:
+        print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
+        ui.notify(f'Could not fetch option expirations: {e}', type='negative')
+        return None, None
+
     if not expirations:
         print("No Options Data for this Ticker")
         ui.notify('No options data for this ticker.', type='negative')
@@ -108,8 +152,9 @@ def req_csv():
     #Loop through all expirations
     for expiry in num_expirations:
         try:
-            #Get a specific chain
-            chain = ticker_object.option_chain(expiry)
+            #Get a specific chain (retried + backed-off; this endpoint is
+            #the most rate-limit-sensitive one yfinance exposes)
+            chain = yf_retry(ticker_object.option_chain, expiry)
 
             #Label calls and puts
             calls = chain.calls.copy()
@@ -138,8 +183,13 @@ def req_csv():
             time.sleep(1)
 
         except Exception as e:
-            print("Error")
+            print(f"Error fetching chain for expiry {expiry}: {type(e).__name__}: {e}")
             continue
+
+    if not frames:
+        print("No option chain data could be retrieved for any expiration")
+        ui.notify('Could not retrieve option chain data for this ticker.', type='negative')
+        return
 
     #Concatenate all rows into one master Data Frame
     surface_df = pd.concat(frames, ignore_index=True)
