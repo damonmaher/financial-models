@@ -114,23 +114,32 @@ def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> 
 def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
     """
     Best-effort market cap lookup per ticker. Returns None for any ticker
-    where yfinance doesn't expose a market cap (e.g. some ETFs/indices), or
-    where every retry attempt fails, so the caller can decide how to handle
-    the gap.
+    where we can't determine a market cap, so the caller can decide how to
+    handle the gap.
 
-    This hits Yahoo's quoteSummary endpoint per-ticker, which is the most
-    rate-limit-sensitive call yfinance makes - each lookup goes through
-    yf_retry with backoff, and a small pause is added between tickers so a
-    multi-ticker universe doesn't trip the rate limiter on its own.
+    Uses fast_info instead of get_info()/.info: get_info() hits Yahoo's
+    quoteSummary endpoint, which is blocked outright for some cloud host
+    IPs (retries return None instead of a 429/timeout - an IP-level block,
+    not a rate limit, so retrying alone doesn't help). fast_info derives
+    its values from the chart/quote endpoints instead, which stay reachable
+    even when quoteSummary doesn't. If fast_info doesn't expose marketCap
+    directly for a given ticker, we fall back to shares outstanding times
+    last price, both also sourced from fast_info.
     """
     caps: dict[str, float | None] = {}
     for i, t in enumerate(tickers):
         cap = None
         try:
-            info = yf_retry(yf.Ticker(t).get_info)
-            if not isinstance(info, dict):
-                raise ValueError(f"get_info() returned no data for '{t}' ({info!r})")
-            cap = info.get("marketCap")
+            fi = yf_retry(lambda tk=t: yf.Ticker(tk).fast_info)
+            try:
+                cap = fi["marketCap"]
+            except (KeyError, TypeError):
+                cap = None
+            if not cap:
+                shares = fi.get("shares") if hasattr(fi, "get") else None
+                last_price = fi.get("lastPrice") if hasattr(fi, "get") else None
+                if shares and last_price:
+                    cap = float(shares) * float(last_price)
         except Exception as e:
             print(f"yfinance error fetching market cap for '{t}': {type(e).__name__}: {e}")
             cap = None
