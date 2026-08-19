@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr acquisition/env python3
 
 import asyncio
 import datetime
@@ -8,20 +8,12 @@ from typing import Dict, List, Tuple, Any
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import requests
 import yfinance as yf
 from nicegui import run, ui
 
 import bs
 import fft
 import set_params
-
-# ---------- Global HTTP Session ----------
-
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-})
 
 # ---------- Styling & Constants ----------
 
@@ -102,14 +94,13 @@ def _get_spot_price_sync(ticker_object: yf.Ticker) -> float:
     try:
         return float(ticker_object.fast_info['lastPrice'])
     except Exception:
-        # Fallback if fast_info key fails
         hist = ticker_object.history(period="1d")
         if hist.empty:
             raise ValueError("Empty price history returned")
         return float(hist['Close'].iloc[-1])
 
 def _get_dividend_yield_sync(ticker_object: yf.Ticker, spot_price: float) -> float:
-    """Calculates TTM dividend yield using session-persisted ticker object."""
+    """Calculates TTM dividend yield using native yfinance session."""
     q = 0.0
     try:
         dividends = ticker_object.get_dividends()
@@ -169,7 +160,7 @@ async def generate_surface():
     stats_card.set_visibility(False)
 
     try:
-        # 1. EARLY CACHE CHECK (Prevents all network calls if cached)
+        # 1. EARLY CACHE CHECK
         cached_entry = _MARKET_CACHE.get(symbol)
         now = time.time()
 
@@ -181,7 +172,7 @@ async def generate_surface():
             q = cached_entry['q']
         else:
             ui.notify(f'Fetching market data for {symbol}...')
-            ticker_object = yf.Ticker(symbol, session=session)
+            ticker_object = yf.Ticker(symbol)
 
             # 2. Fetch Spot Price via fast_info
             s_nought = await async_retry(
@@ -240,7 +231,7 @@ async def generate_surface():
                     frames.append(full_chain[clean_columns])
 
                     if i < len(target_expirations) - 1:
-                        await asyncio.sleep(1.0)  # Rate limiting delay between chains
+                        await asyncio.sleep(1.0)
 
                 except Exception as e:
                     print(f"Error fetching chain for expiry {expiry}: {e}")
