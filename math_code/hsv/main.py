@@ -168,6 +168,7 @@ async def generate_surface():
             }
 
         # 2. Run CPU Calibration Pipeline
+        # 2. Run CPU Calibration Pipeline
         ui.notify('Calibrating Heston model & computing fair prices...')
         strikes_axis, target_ttms, price_matrix, params = await run.cpu_bound(
             pipeline, history_data, s_nought, q
