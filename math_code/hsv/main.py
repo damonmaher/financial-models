@@ -1,65 +1,83 @@
 #!/usr/bin/env python3
 
+import asyncio
+import datetime
+import time
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
-import asyncio
-import datetime
-import time
+from nicegui import run, ui
 
-import set_params
 import bs
 import fft
+import set_params
 
-from pathlib import Path
-from nicegui import ui, run
+# ---------- Styling & Constants ----------
 
-#import set_params
+class Config:
+    BG_PANEL = '#0e1013'
+    BORDER = 'rgba(120, 210, 160, 0.22)'
+    WHITE = '#f2f3f5'
+    MUTED = '#8a8f98'
+    GREEN = '#7fd8a4'
+    
+    MAX_EXPIRATIONS = 3
+    DIV_YIELD_TTL = 7 * 24 * 60 * 60  # 1 week in seconds
+    OPTIONS_CACHE_TTL = 15 * 60       # 15 minutes in seconds
 
-## ---------- Theme constants -----------
+# ---------- Caches ----------
 
-BG_PANEL = '#0e1013'
-BORDER = 'rgba(120, 210, 160, 0.22)'
-WHITE = '#f2f3f5'
-MUTED = '#8a8f98'
-GREEN = '#7fd8a4'
+_DIV_YIELD_CACHE: Dict[str, Tuple[float, float]] = {}  # ticker -> (yield, timestamp)
+_OPTIONS_CACHE: Dict[str, Tuple[List[pd.DataFrame], float]] = {}  # ticker -> (frames, timestamp)
 
-def dark_scene():
+# ---------- Plotly Helper Functions ----------
+
+def create_dark_scene() -> dict:
     return dict(
-        xaxis=dict(title='Strike Price ($)', backgroundcolor=BG_PANEL, gridcolor='rgba(255,255,255,0.08)',
-                   color=MUTED, showbackground=True),
-        yaxis=dict(title='Days to Maturity', backgroundcolor=BG_PANEL, gridcolor='rgba(255,255,255,0.08)',
-                   color=MUTED, showbackground=True),
-        zaxis=dict(title='Implied Volatility (IV)', backgroundcolor=BG_PANEL, gridcolor='rgba(255,255,255,0.08)',
-                   color=MUTED, showbackground=True),
+        xaxis=dict(
+            title='Strike Price ($)',
+            backgroundcolor=Config.BG_PANEL,
+            gridcolor='rgba(255,255,255,0.08)',
+            color=Config.MUTED,
+            showbackground=True,
+        ),
+        yaxis=dict(
+            title='Days to Maturity',
+            backgroundcolor=Config.BG_PANEL,
+            gridcolor='rgba(255,255,255,0.08)',
+            color=Config.MUTED,
+            showbackground=True,
+        ),
+        zaxis=dict(
+            title='Implied Volatility (IV)',
+            backgroundcolor=Config.BG_PANEL,
+            gridcolor='rgba(255,255,255,0.08)',
+            color=Config.MUTED,
+            showbackground=True,
+        ),
     )
 
-def dark_layout(title):
+def create_dark_layout(title: str) -> dict:
     return dict(
-        title=dict(text=title, font=dict(family='JetBrains Mono, monospace', size=16, color=WHITE)),
-        paper_bgcolor=BG_PANEL,
-        plot_bgcolor=BG_PANEL,
-        font=dict(family='JetBrains Mono, monospace', color=MUTED, size=12),
-        scene=dark_scene(),
+        title=dict(
+            text=title,
+            font=dict(family='JetBrains Mono, monospace', size=16, color=Config.WHITE),
+        ),
+        paper_bgcolor=Config.BG_PANEL,
+        plot_bgcolor=Config.BG_PANEL,
+        font=dict(family='JetBrains Mono, monospace', color=Config.MUTED, size=12),
+        scene=create_dark_scene(),
         margin=dict(l=10, r=10, t=50, b=10),
     )
 
-## ---------- Non-blocking yfinance retry helper -----------
-## IMPORTANT: NiceGUI runs on a single asyncio event loop shared by every
-## connected user. A synchronous time.sleep() inside a plain on_click
-## callback blocks that whole loop - which is why a rate-limit backoff of
-## a few minutes made the ENTIRE APP freeze for everyone, not just the one
-## session waiting on data. The fix: run every blocking yfinance call in a
-## worker thread via run.io_bound, and use asyncio.sleep() (non-blocking)
-## for the backoff delay between attempts. This keeps the event loop free
-## to serve other users/requests while a retry is waiting.
+# ---------- Async Retry & Fetching Helpers ----------
 
 async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, label="request", **kwargs):
-    """Await func(*args, **kwargs) in a worker thread, retrying with capped
-    exponential backoff on failure. Notifies the user (without blocking the
-    event loop) while it waits, so a retry looks like progress rather than
-    a frozen page. Re-raises the last exception if every attempt fails."""
+    """Executes func in an io_bound thread with non-blocking exponential backoff retries."""
     last_exc = None
     for attempt in range(retries):
         try:
@@ -68,44 +86,28 @@ async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, la
             last_exc = e
             if attempt < retries - 1:
                 delay = min(base_delay * (2 ** attempt), max_delay)
-                print(f"[{label}] attempt {attempt + 1}/{retries} failed ({type(e).__name__}: {e}); "
-                      f"waiting {delay:.0f}s before retry")
+                print(f"[{label}] Attempt {attempt + 1}/{retries} failed ({type(e).__name__}: {e}); retrying in {delay:.0f}s...")
                 ui.notify(f'{label}: rate limited, retrying in {delay:.0f}s...', type='warning')
                 await asyncio.sleep(delay)
     raise last_exc
 
-
-## ---------- Caches -----------
-## The real fix for the rate limiting isn't retrying harder - it's asking
-## Yahoo less often. Option chains (180-365 DTE) and dividend yields don't
-## meaningfully change minute to minute, so repeat requests for the same
-## ticker within these windows are served from cache instead of re-hitting
-## the most rate-limit-sensitive endpoints.
-
-MAX_EXPIRATIONS = 3  # was 5 - fewer sequential option_chain() calls per fetch
-
-_DIV_YIELD_CACHE: dict[str, tuple[float, float]] = {}   # ticker -> (q, fetched_at)
-_DIV_YIELD_TTL = 7 * 24 * 60 * 60  # 1 week - yields change rarely
-
-_OPTIONS_CACHE: dict[str, tuple[list, float]] = {}       # ticker -> (frames, fetched_at)
-_OPTIONS_CACHE_TTL = 15 * 60  # 15 minutes
-
-
-async def get_cached_dividend_yield(ticker_object, ticker_symbol, s_nought):
+async def get_cached_dividend_yield(ticker_object: yf.Ticker, ticker_symbol: str, spot_price: float) -> float:
     cached = _DIV_YIELD_CACHE.get(ticker_symbol)
-    if cached and (time.time() - cached[1]) < _DIV_YIELD_TTL:
+    if cached and (time.time() - cached[1]) < Config.DIV_YIELD_TTL:
         return cached[0]
 
     q = 0.0
     try:
-        dividends = await async_retry(ticker_object.get_dividends,
-                                       retries=2, base_delay=2.0, max_delay=6.0, label="dividends")
+        dividends = await async_retry(
+            ticker_object.get_dividends,
+            retries=2, base_delay=2.0, max_delay=6.0, label="dividends"
+        )
         if dividends is not None and not dividends.empty:
             tz = dividends.index.tz
             cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
             ttm_dividends = float(dividends[dividends.index >= cutoff].sum())
-            if s_nought > 0:
-                q = ttm_dividends / s_nought
+            if spot_price > 0:
+                q = ttm_dividends / spot_price
     except Exception as e:
         print(f"Could not fetch dividend yield for '{ticker_symbol}': {type(e).__name__}: {e}")
         q = 0.0
@@ -113,210 +115,23 @@ async def get_cached_dividend_yield(ticker_object, ticker_symbol, s_nought):
     _DIV_YIELD_CACHE[ticker_symbol] = (q, time.time())
     return q
 
+# ---------- Calibration CPU Pipeline ----------
 
-## ---------- Parameters -----------
-
-cmarket_df = 0
-s_nought = 0
-r_free = 0
-var = 0
-vol_vol = 0
-long_term_var = 0
-mean_rev = 0
-
-global_fig = go.Figure()
-global_fig.update_layout(**dark_layout("Enter a ticker to begin"))
-
-
-
-## -------- Event Listeners --------
-
-async def req_csv():
-    ticker_object = yf.Ticker(ticker_input.value)
-
-    #Set current stock price
-    try:
-        hist = await async_retry(ticker_object.history, period="1d",
-                                  retries=3, base_delay=2.0, max_delay=10.0, label="price history")
-        if hist is None or hist.empty:
-            raise ValueError(f"No price history returned for '{ticker_input.value}'")
-        s_nought = hist['Close'].iloc[-1]
-
-        # Dividend yield: cached per ticker for a week (see
-        # get_cached_dividend_yield) since yields barely move day to day,
-        # and it's real accuracy per-ticker with near-zero repeat API cost -
-        # far better than defaulting non-dividend-payers and payers alike
-        # to one hardcoded constant.
-        q = await get_cached_dividend_yield(ticker_object, ticker_input.value, s_nought)
-
-    except Exception as e:
-        print(f"yfinance error on '{ticker_input.value}': {type(e).__name__}: {e}")
-        ui.notify(f'Data fetch failed: {type(e).__name__}: {e}', type='negative')
-        return None, None
-
-    stats_card.set_visibility(False)
-
-    #Check the options cache first - if this ticker was fetched recently,
-    #reuse it instead of hitting Yahoo's most rate-limit-sensitive endpoint
-    #again. This is what actually reduces rate-limit hits, rather than just
-    #retrying harder against the same request volume.
-    symbol_key = ticker_input.value.upper()
-    cached_frames = _OPTIONS_CACHE.get(symbol_key)
-    if cached_frames and (time.time() - cached_frames[1]) < _OPTIONS_CACHE_TTL:
-        age_min = (time.time() - cached_frames[1]) / 60
-        ui.notify(f'Using cached option chain for {symbol_key} (fetched {age_min:.0f}m ago)')
-        frames = cached_frames[0]
-    else:
-        ui.notify(f'Fetching option chain for {ticker_input.value}...')
-
-        #Extract expiration dates
-        try:
-            expirations = await async_retry(lambda: ticker_object.options,
-                                             retries=4, base_delay=6.0, max_delay=30.0, label="option expirations")
-        except Exception as e:
-            print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
-            ui.notify(f'Could not fetch option expirations (rate limited): {e}', type='negative')
-            return None, None
-
-        if not expirations:
-            print("No Options Data for this Ticker")
-            ui.notify('No options data for this ticker.', type='negative')
-            return
-
-        #Limit expirations
-        today_date = datetime.date.today()
-        num_expirations = []
-
-        for exp in expirations:
-            exp_date = pd.to_datetime(exp).date()
-            days_to_exp = (exp_date-today_date).days
-
-            if 180 <= days_to_exp <= 365:
-                num_expirations.append(exp)
-
-        num_expirations = num_expirations[:MAX_EXPIRATIONS]
-
-        frames = []
-
-        #Loop through all expirations
-        for i, expiry in enumerate(num_expirations):
-            try:
-                #Get a specific chain. Bounded backoff (max 4 attempts, capped
-                #at 30s) - this is the most rate-limit-sensitive endpoint
-                #yfinance exposes, and a burst of sequential calls is enough
-                #to trip it on its own.
-                chain = await async_retry(ticker_object.option_chain, expiry,
-                                           retries=4, base_delay=6.0, max_delay=30.0,
-                                           label=f"chain {expiry}")
-
-                #Label calls and puts
-                calls = chain.calls.copy()
-                puts = chain.puts.copy()
-                calls['type'] = 'Call'
-                puts['type'] = 'Put'
-
-                #Combine calls and puts for this expiration
-                full_chain = pd.concat([calls,puts],ignore_index=True)
-
-                #Add expiration date as a column
-                full_chain['expiration'] = expiry
-
-                #Calculate TTE in years
-                expiry_date = pd.to_datetime(expiry).date()
-                today_date = pd.to_datetime('today').date()
-
-                days_to_expiry = (expiry_date - today_date).days
-                full_chain['T'] = max(days_to_expiry, 1) / 365.0
-
-                #Keep only necessary columns
-                clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
-                frames.append(full_chain[clean_columns])
-
-                #Small pause between expirations, non-blocking
-                if i < len(num_expirations) - 1:
-                    await asyncio.sleep(2)
-
-            except Exception as e:
-                print(f"Error fetching chain for expiry {expiry}: {type(e).__name__}: {e}")
-                continue
-
-        if not frames:
-            print("No option chain data could be retrieved for any expiration")
-            ui.notify('Could not retrieve option chain data for this ticker.', type='negative')
-            return
-
-        #Cache the fresh frames for reuse by this or the next request
-        _OPTIONS_CACHE[symbol_key] = (frames, time.time())
-
-    #Concatenate all rows into one master Data Frame
-    surface_df = pd.concat(frames, ignore_index=True)
-
-    #Calculate C_Market
-    surface_df['C_market'] = (surface_df['bid']+surface_df['ask'])/2
-
-    #If bid/ask is missing of zero, use last traded price
-    surface_df['C_market'] = surface_df['C_market'].fillna(surface_df['lastPrice'])
-    surface_df.loc[surface_df['C_market'] <= 0, 'C_market'] = surface_df['lastPrice']
-
-    #Only want a 20% strike-asset price spread
-    upper_bound = s_nought * 1.20
-    lower_bound = s_nought * 0.80
-
-    filtered_df = surface_df[
-        (surface_df['strike'] >= lower_bound) &
-        (surface_df['strike'] <= upper_bound)
-    ].copy()
-
-    #Remove quotes with an ask price of 0
-    filtered_df = filtered_df[filtered_df['C_market'] > 0.01]
-
-    #Calibration + FFT pricing is CPU-bound numeric work, not I/O - run it
-    #off the event loop too so a slow ticker doesn't stall other users.
-    ui.notify('Calibrating Heston surface...')
-    strikes_axis, target_ttms, vol_matrix, params = await run.cpu_bound(
-        pipeline, filtered_df, s_nought, ticker_input.value, q
-    )
-    X_grid, Y_grid = np.meshgrid(strikes_axis, target_ttms)
-    Z_grid = np.array(vol_matrix)
-
-    fig = go.Figure(data=[go.Surface(
-        x=X_grid,
-        y=Y_grid * 365, #turns back into days
-        z=Z_grid,
-        colorscale=[[0, '#1b2a4a'], [0.5, '#3d6fd6'], [1, '#f2f3f5']],
-        showscale=True,
-        colorbar=dict(title='IV', tickfont=dict(color=MUTED), title_font=dict(color=MUTED))
-    )])
-
-    fig.update_layout(**dark_layout(f'{ticker_input.value.upper()}  ·  Implied Volatility Surface'))
-    fig.update_layout(autosize=True, height=700)
-
-    plotly_display.update_figure(fig)
-
-    #Update the parameter panel
-    kappa, theta, vol_of_vol, rho, v0 = params
-    stats_kappa.set_text(f'{kappa:.4f}')
-    stats_theta.set_text(f'{theta:.4f}')
-    stats_volvol.set_text(f'{vol_of_vol:.4f}')
-    stats_rho.set_text(f'{rho:.4f}')
-    stats_v0.set_text(f'{v0:.4f}')
-    stats_spot.set_text(f'${s_nought:,.2f}')
-    stats_card.set_visibility(True)
-
-
-
-## -------- Master Process ---------
-
-#Generate risk_free interest vals for each contract, append to df
-def pipeline(filtered_df, s_nought, ticker, q):
+def pipeline(filtered_df: pd.DataFrame, s_nought: float, ticker: str, q: float):
+    """CPU-heavy calibration and FFT pricing pipeline run inside worker thread."""
     filtered_df['r'] = set_params.calc_sofr_rates(filtered_df['T'].values)
-    filtered_df['vol_atm'] = bs.inv_bs(s_nought, filtered_df['strike'].values, filtered_df['r'].values, filtered_df['T'].values, filtered_df['C_market'].values, q)
-    print(filtered_df)
+    filtered_df['vol_atm'] = bs.inv_bs(
+        s_nought,
+        filtered_df['strike'].values,
+        filtered_df['r'].values,
+        filtered_df['T'].values,
+        filtered_df['C_market'].values,
+        q
+    )
 
     kappa, theta, vol_of_vol, rho, v0 = set_params.calc_params(ticker)
-    print(f"Kappa: {kappa:.4f}, Theta: {theta:.4f}, Vol_of_Vol: {vol_of_vol:.4f}, Rho: {rho:.4f}")
 
-    days = np.arange(180,365,10)
+    days = np.arange(180, 365, 10)
     target_ttms = days / 365.0
     strikes_axis = np.linspace(s_nought * 0.5, s_nought * 1.5, 100)
     vol_matrix = []
@@ -324,26 +139,162 @@ def pipeline(filtered_df, s_nought, ticker, q):
     for ttm in target_ttms:
         r = set_params.calc_sofr_rates(ttm)
         if isinstance(r, np.ndarray):
-            r=r[0]
-        fair_prices, strikes = fft.heston_fft_main(s_nought,ttm, kappa, theta, vol_of_vol, rho, v0, r, q, is_call=True)
-        standardized_prices = np.interp(strikes_axis, strikes, fair_prices) #interpolate onto 100-point strikes to get more uniform values
+            r = r[0]
+        fair_prices, strikes = fft.heston_fft_main(s_nought, ttm, kappa, theta, vol_of_vol, rho, v0, r, q, is_call=True)
+        standardized_prices = np.interp(strikes_axis, strikes, fair_prices)
         atm_vols = bs.inv_bs(s_nought, strikes_axis, r, ttm, standardized_prices, q)
         vol_matrix.append(atm_vols)
 
     return strikes_axis, target_ttms, vol_matrix, (kappa, theta, vol_of_vol, rho, v0)
 
+# ---------- Core Event Handlers ----------
 
+async def generate_surface():
+    symbol = ticker_input.value.strip().upper()
+    if not symbol:
+        ui.notify('Please enter a valid ticker symbol.', type='warning')
+        return
 
+    # Lock UI controls
+    run_button.disable()
+    spinner.set_visibility(True)
+    stats_card.set_visibility(False)
 
-#Build parameters
-#Run fft
+    try:
+        ticker_object = yf.Ticker(symbol)
 
+        # 1. Fetch current price
+        hist = await async_retry(
+            ticker_object.history, period="1d",
+            retries=3, base_delay=2.0, max_delay=10.0, label="price history"
+        )
+        if hist is None or hist.empty:
+            raise ValueError(f"No price history returned for '{symbol}'")
+        s_nought = float(hist['Close'].iloc[-1])
 
+        # 2. Fetch dividend yield
+        q = await get_cached_dividend_yield(ticker_object, symbol, s_nought)
 
-## ----------- Page setup / global styling -----------
+        # 3. Check/Fetch options chain
+        cached_frames = _OPTIONS_CACHE.get(symbol)
+        if cached_frames and (time.time() - cached_frames[1]) < Config.OPTIONS_CACHE_TTL:
+            age_min = (time.time() - cached_frames[1]) / 60
+            ui.notify(f'Using cached option chain for {symbol} (fetched {age_min:.0f}m ago)')
+            frames = cached_frames[0]
+        else:
+            ui.notify(f'Fetching option chain for {symbol}...')
+            expirations = await async_retry(
+                lambda: ticker_object.options,
+                retries=4, base_delay=6.0, max_delay=30.0, label="option expirations"
+            )
+
+            if not expirations:
+                ui.notify(f'No options data available for {symbol}.', type='negative')
+                return
+
+            today_date = datetime.date.today()
+            target_expirations = []
+            for exp in expirations:
+                exp_date = pd.to_datetime(exp).date()
+                days_to_exp = (exp_date - today_date).days
+                if 180 <= days_to_exp <= 365:
+                    target_expirations.append(exp)
+
+            target_expirations = target_expirations[:Config.MAX_EXPIRATIONS]
+            if not target_expirations:
+                ui.notify(f'No options found in the 180-365 DTE range for {symbol}.', type='warning')
+                return
+
+            frames = []
+            for i, expiry in enumerate(target_expirations):
+                try:
+                    chain = await async_retry(
+                        ticker_object.option_chain, expiry,
+                        retries=4, base_delay=6.0, max_delay=30.0, label=f"chain {expiry}"
+                    )
+                    calls, puts = chain.calls.copy(), chain.puts.copy()
+                    calls['type'], puts['type'] = 'Call', 'Put'
+
+                    full_chain = pd.concat([calls, puts], ignore_index=True)
+                    full_chain['expiration'] = expiry
+
+                    expiry_date = pd.to_datetime(expiry).date()
+                    days_to_expiry = (expiry_date - today_date).days
+                    full_chain['T'] = max(days_to_expiry, 1) / 365.0
+
+                    clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
+                    frames.append(full_chain[clean_columns])
+
+                    if i < len(target_expirations) - 1:
+                        await asyncio.sleep(2)
+
+                except Exception as e:
+                    print(f"Error fetching chain for expiry {expiry}: {e}")
+                    continue
+
+            if not frames:
+                ui.notify('Could not retrieve option chain data.', type='negative')
+                return
+
+            _OPTIONS_CACHE[symbol] = (frames, time.time())
+
+        # 4. Filter and process options data
+        surface_df = pd.concat(frames, ignore_index=True)
+        surface_df['C_market'] = (surface_df['bid'] + surface_df['ask']) / 2
+        surface_df['C_market'] = surface_df['C_market'].fillna(surface_df['lastPrice'])
+        surface_df.loc[surface_df['C_market'] <= 0, 'C_market'] = surface_df['lastPrice']
+
+        # Restrict to ±20% strike window around spot
+        filtered_df = surface_df[
+            (surface_df['strike'] >= s_nought * 0.80) &
+            (surface_df['strike'] <= s_nought * 1.20) &
+            (surface_df['C_market'] > 0.01)
+        ].copy()
+
+        # 5. Run CPU-bound calibration
+        ui.notify('Calibrating Heston surface...')
+        strikes_axis, target_ttms, vol_matrix, params = await run.cpu_bound(
+            pipeline, filtered_df, s_nought, symbol, q
+        )
+
+        # 6. Render 3D Surface
+        X_grid, Y_grid = np.meshgrid(strikes_axis, target_ttms)
+        Z_grid = np.array(vol_matrix)
+
+        fig = go.Figure(data=[go.Surface(
+            x=X_grid,
+            y=Y_grid * 365,
+            z=Z_grid,
+            colorscale=[[0, '#1b2a4a'], [0.5, '#3d6fd6'], [1, '#f2f3f5']],
+            showscale=True,
+            colorbar=dict(title='IV', tickfont=dict(color=Config.MUTED), title_font=dict(color=Config.MUTED))
+        )])
+        fig.update_layout(**create_dark_layout(f'{symbol}  ·  Implied Volatility Surface'))
+        fig.update_layout(autosize=True, height=700)
+
+        plotly_display.update_figure(fig)
+
+        # 7. Update statistics panel
+        kappa, theta, vol_of_vol, rho, v0 = params
+        stats_spot.set_text(f'${s_nought:,.2f}')
+        stats_kappa.set_text(f'{kappa:.4f}')
+        stats_theta.set_text(f'{theta:.4f}')
+        stats_volvol.set_text(f'{vol_of_vol:.4f}')
+        stats_rho.set_text(f'{rho:.4f}')
+        stats_v0.set_text(f'{v0:.4f}')
+        stats_card.set_visibility(True)
+
+    except Exception as e:
+        print(f"Error processing '{symbol}': {type(e).__name__}: {e}")
+        ui.notify(f'Failed to generate surface: {e}', type='negative')
+
+    finally:
+        run_button.enable()
+        spinner.set_visibility(False)
+
+# ---------- Global Theme Head Script ----------
 
 ui.dark_mode().enable()
-
 ui.add_head_html('''
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -411,24 +362,34 @@ ui.add_head_html('''
 </style>
 ''')
 
-## ----------- UI Layout -----------
+# ---------- Layout Construction ----------
+
+default_fig = go.Figure()
+default_fig.update_layout(**create_dark_layout("Enter a ticker to begin"))
 
 with ui.column().classes('w-full items-center').style('padding: 2.5rem 1.5rem;'):
     with ui.column().classes('items-center gap-1').style('max-width: 900px; margin-bottom: 2rem;'):
         ui.label('HESTON-BASED PNL PREDICTION FOR OPTIONS').classes('brand-title text-3xl text-center')
 
+    # Controls Bar
     with ui.row().classes('items-center gap-4 panel-card').style('padding: 1.1rem 1.5rem; width: 100%; max-width: 900px;'):
         ticker_input = ui.input(
             label='Ticker Symbol',
             value='NVDA',
             placeholder='Enter Ticker Symbol'
         ).props('outlined dense').classes('w-40')
-        ui.button('REQUEST CSV', on_click=req_csv).classes('run-btn').props('unelevated')
+        
+        run_button = ui.button('GENERATE SURFACE', on_click=generate_surface).classes('run-btn').props('unelevated')
+        spinner = ui.spinner(size='lg', color='green-4').classes('ml-2')
+        spinner.set_visibility(False)
+        
         ui.label('180–365 DTE chain · FFT-priced Heston surface').classes('mono-label').style('margin-left: auto;')
 
+    # 3D Plot Display
     with ui.column().classes('panel-card').style('width: 100%; max-width: 900px; margin-top: 1.5rem; padding: 0.75rem;'):
-        plotly_display = ui.plotly(global_fig).classes('w-full').style('height: 700px;')
+        plotly_display = ui.plotly(default_fig).classes('w-full').style('height: 700px;')
 
+    # Parameter & Stats Card Row
     with ui.row().classes('gap-4 flex-wrap').style('width: 100%; max-width: 900px; margin-top: 1.5rem;') as stats_card:
         with ui.column().classes('panel-card items-start').style('padding: 1rem 1.5rem; min-width: 140px; flex: 1;'):
             ui.label('SPOT').classes('mono-label')
@@ -450,5 +411,7 @@ with ui.column().classes('w-full items-center').style('padding: 2.5rem 1.5rem;')
             stats_v0 = ui.label('—').classes('mono-value')
 
     stats_card.set_visibility(False)
+
+# ---------- Application Entrypoint ----------
 
 ui.run(native=True, title="Volatility Surface Viewer", window_size=(960, 950))
