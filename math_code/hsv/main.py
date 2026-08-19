@@ -97,13 +97,24 @@ def req_csv():
             raise ValueError(f"No price history returned for '{ticker_input.value}'")
         s_nought = hist['Close'].iloc[-1]
 
-        # fetch dividend yield q (this hits the quoteSummary endpoint, the
-        # one most likely to get rate-limited/blocked on a cloud host)
-        info = yf_retry(ticker_object.get_info)
-        if not isinstance(info, dict):
-            raise ValueError(f"get_info() returned no data for '{ticker_input.value}' ({info!r})")
-        q = info.get('dividendYield', 0.0)
-        if q is None:
+        # Dividend yield: computed from trailing-12-month dividends (the
+        # actions/chart endpoint) divided by current price, instead of
+        # pulling dividendYield from get_info()/quoteSummary. Yahoo appears
+        # to be blocking quoteSummary outright for this host's IP - every
+        # retry returns None rather than a 429/timeout, which points to an
+        # IP-level block rather than a transient rate limit, so no amount
+        # of retrying fixes it. Dividends history isn't behind that gate.
+        q = 0.0
+        try:
+            dividends = yf_retry(ticker_object.get_dividends)
+            if dividends is not None and not dividends.empty:
+                tz = dividends.index.tz
+                cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
+                ttm_dividends = float(dividends[dividends.index >= cutoff].sum())
+                if s_nought > 0:
+                    q = ttm_dividends / s_nought
+        except Exception as div_e:
+            print(f"Could not compute dividend yield for '{ticker_input.value}': {type(div_e).__name__}: {div_e}")
             q = 0.0
 
     except Exception as e:
