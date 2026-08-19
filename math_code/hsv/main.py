@@ -7,8 +7,6 @@ import yfinance as yf
 import time
 import datetime
 
-from curl_cffi import requests as cffi_requests
-
 import set_params
 import bs
 import fft
@@ -46,18 +44,16 @@ def dark_layout(title):
         margin=dict(l=10, r=10, t=50, b=10),
     )
 
-## ---------- yfinance hardening (Render / cloud IPs get blocked on the
-## quoteSummary + options endpoints far more aggressively than the plain
-## chart/download endpoint, so every "info"/"options" call below goes
-## through a browser-impersonating session with retry/backoff) -----------
-
-def make_yf_session():
-    """A fresh curl_cffi session that impersonates Chrome's TLS fingerprint.
-    Yahoo's anti-bot layer keys heavily off TLS handshake shape, and plain
-    requests/urllib3 (what yfinance uses by default) gets flagged on shared
-    cloud IPs like Render's even when headers look fine."""
-    return cffi_requests.Session(impersonate="chrome")
-
+## ---------- yfinance hardening -----------
+## yfinance (0.2.60+) already impersonates Chrome via curl_cffi internally
+## by default - it builds its own `requests.Session(impersonate="chrome")`
+## whenever you DON'T pass a session. Passing an external curl_cffi session
+## in ourselves conflicts with yfinance's own cookie/crumb handshake and
+## causes info calls to silently return None instead of raising, which is
+## worse than doing nothing. So: don't touch sessions at all, just retry
+## with backoff on top of yfinance's built-in impersonation, since the
+## quoteSummary/options endpoints are still the most rate-limit-sensitive
+## ones even with impersonation working correctly.
 
 def yf_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
     """Call func(*args, **kwargs), retrying with exponential backoff on any
@@ -92,8 +88,7 @@ global_fig.update_layout(**dark_layout("Enter a ticker to begin"))
 ## -------- Event Listeners --------
 
 def req_csv():
-    session = make_yf_session()
-    ticker_object = yf.Ticker(ticker_input.value, session=session)
+    ticker_object = yf.Ticker(ticker_input.value)
 
     #Set current stock price
     try:
@@ -105,6 +100,8 @@ def req_csv():
         # fetch dividend yield q (this hits the quoteSummary endpoint, the
         # one most likely to get rate-limited/blocked on a cloud host)
         info = yf_retry(ticker_object.get_info)
+        if not isinstance(info, dict):
+            raise ValueError(f"get_info() returned no data for '{ticker_input.value}' ({info!r})")
         q = info.get('dividendYield', 0.0)
         if q is None:
             q = 0.0
