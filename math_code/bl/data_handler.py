@@ -16,25 +16,21 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from curl_cffi import requests as cffi_requests
-
 
 class DataFetchError(Exception):
     """Raised when we can't build a usable dataset for the requested tickers."""
 
 
 ## ---------- yfinance hardening -----------
-# Yahoo's anti-bot layer is far stricter on the quoteSummary endpoint
-# (which backs .info / .get_info(), used below for market caps) than on
-# the chart/download endpoint used for price history. Cloud hosts like
-# Render get flagged on quoteSummary even when the chart endpoint works
-# fine, so every call below goes through a browser-impersonating session
-# with retry/backoff.
-
-def make_yf_session():
-    """A fresh curl_cffi session that impersonates Chrome's TLS fingerprint."""
-    return cffi_requests.Session(impersonate="chrome")
-
+## yfinance (0.2.60+) already impersonates Chrome via curl_cffi internally
+## by default - it builds its own `requests.Session(impersonate="chrome")`
+## whenever you DON'T pass a session. Passing an external curl_cffi session
+## in ourselves conflicts with yfinance's own cookie/crumb handshake and
+## causes info calls to silently return None instead of raising, which is
+## worse than doing nothing (this was the cause of the market-cap gaps).
+## So: don't touch sessions at all, just retry with backoff on top of
+## yfinance's built-in impersonation, since quoteSummary is still the most
+## rate-limit-sensitive endpoint even when impersonation works correctly.
 
 def yf_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
     """Call func(*args, **kwargs), retrying with exponential backoff on any
@@ -55,7 +51,6 @@ def fetch_price_history(
     tickers: list[str],
     period: str = "3y",
     interval: str = "1wk",
-    session=None,
 ) -> pd.DataFrame:
     """
     Download adjusted close prices for a list of tickers.
@@ -66,9 +61,6 @@ def fetch_price_history(
     if not tickers:
         raise DataFetchError("No tickers were provided.")
 
-    if session is None:
-        session = make_yf_session()
-
     try:
         raw = yf_retry(
             yf.download,
@@ -78,7 +70,6 @@ def fetch_price_history(
             auto_adjust=True,
             progress=False,
             group_by="column",
-            session=session,
         )
     except Exception as e:
         raise DataFetchError(
@@ -120,7 +111,7 @@ def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> 
     return cov_matrix, log_returns
 
 
-def fetch_market_caps(tickers: list[str], session=None) -> dict[str, float | None]:
+def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
     """
     Best-effort market cap lookup per ticker. Returns None for any ticker
     where yfinance doesn't expose a market cap (e.g. some ETFs/indices), or
@@ -132,14 +123,13 @@ def fetch_market_caps(tickers: list[str], session=None) -> dict[str, float | Non
     yf_retry with backoff, and a small pause is added between tickers so a
     multi-ticker universe doesn't trip the rate limiter on its own.
     """
-    if session is None:
-        session = make_yf_session()
-
     caps: dict[str, float | None] = {}
     for i, t in enumerate(tickers):
         cap = None
         try:
-            info = yf_retry(yf.Ticker(t, session=session).get_info)
+            info = yf_retry(yf.Ticker(t).get_info)
+            if not isinstance(info, dict):
+                raise ValueError(f"get_info() returned no data for '{t}' ({info!r})")
             cap = info.get("marketCap")
         except Exception as e:
             print(f"yfinance error fetching market cap for '{t}': {type(e).__name__}: {e}")
