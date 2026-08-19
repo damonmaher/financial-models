@@ -3,7 +3,7 @@
 import asyncio
 import datetime
 import time
-from typing import Dict, List, Any
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 import yfinance as yf
 from nicegui import run, ui
 
-import bs
 import fft
 import set_params
 
@@ -29,7 +28,7 @@ class Config:
 
 # ---------- Cache ----------
 
-# Structure: ticker -> {'frames': List[pd.DataFrame], 'spot': float, 'timestamp': float}
+# Structure: ticker -> {'history': pd.DataFrame, 'spot': float, 'expirations': list, 'timestamp': float}
 _MARKET_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # ---------- Plotly Helper Functions ----------
@@ -51,7 +50,7 @@ def create_dark_scene() -> dict:
             showbackground=True,
         ),
         zaxis=dict(
-            title='Implied Volatility (IV)',
+            title='Fair Call Price ($)',
             backgroundcolor=Config.BG_PANEL,
             gridcolor='rgba(255,255,255,0.08)',
             color=Config.MUTED,
@@ -89,47 +88,33 @@ async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, la
                 await asyncio.sleep(delay)
     raise last_exc
 
-def _get_spot_price_sync(ticker_object: yf.Ticker) -> float:
-    """Uses lightweight fast_info endpoint to avoid heavy history() requests."""
-    try:
-        return float(ticker_object.fast_info['lastPrice'])
-    except Exception:
-        hist = ticker_object.history(period="1d")
-        if hist.empty:
-            raise ValueError("Empty price history returned")
-        return float(hist['Close'].iloc[-1])
-
 # ---------- Calibration CPU Pipeline ----------
 
-def pipeline(filtered_df: pd.DataFrame, s_nought: float, ticker: str, q: float):
-    """CPU-heavy calibration and FFT pricing pipeline run inside worker thread."""
-    filtered_df['r'] = set_params.calc_sofr_rates(filtered_df['T'].values)
-    filtered_df['vol_atm'] = bs.inv_bs(
-        s_nought,
-        filtered_df['strike'].values,
-        filtered_df['r'].values,
-        filtered_df['T'].values,
-        filtered_df['C_market'].values,
-        q
-    )
+def pipeline(history_data: pd.DataFrame, s_nought: float, q: float):
+    """Calibrates Heston parameters and calculates FFT option fair prices (no inverse BS)."""
+    # 1. Calibrate EKF Heston Parameters using pre-fetched history
+    kappa, theta, vol_of_vol, rho, v0 = set_params.calc_params(history_data)
 
-    kappa, theta, vol_of_vol, rho, v0 = set_params.calc_params(ticker)
-
+    # 2. Compute Fair Prices across Strike and Maturity Grids
     days = np.arange(180, 365, 10)
     target_ttms = days / 365.0
-    strikes_axis = np.linspace(s_nought * 0.5, s_nought * 1.5, 100)
-    vol_matrix = []
+    strikes_axis = np.linspace(s_nought * 0.70, s_nought * 1.30, 100)
+    price_matrix = []
 
     for ttm in target_ttms:
         r = set_params.calc_sofr_rates(ttm)
         if isinstance(r, np.ndarray):
             r = r[0]
-        fair_prices, strikes = fft.heston_fft_main(s_nought, ttm, kappa, theta, vol_of_vol, rho, v0, r, q, is_call=True)
+        
+        # FFT pricing outputs fair contract prices in USD
+        fair_prices, strikes = fft.heston_fft_main(
+            s_nought, ttm, kappa, theta, vol_of_vol, rho, v0, r, q, is_call=True
+        )
+        # Interpolate directly onto standardized strike grid
         standardized_prices = np.interp(strikes_axis, strikes, fair_prices)
-        atm_vols = bs.inv_bs(s_nought, strikes_axis, r, ttm, standardized_prices, q)
-        vol_matrix.append(atm_vols)
+        price_matrix.append(standardized_prices)
 
-    return strikes_axis, target_ttms, vol_matrix, (kappa, theta, vol_of_vol, rho, v0)
+    return strikes_axis, target_ttms, price_matrix, (kappa, theta, vol_of_vol, rho, v0)
 
 # ---------- Core Event Handlers ----------
 
@@ -140,7 +125,6 @@ async def generate_surface():
         return
 
     try:
-        # Convert entered percentage yield to decimal (e.g., 1.5% -> 0.015)
         q = float(q_input.value or 0.0) / 100.0
     except ValueError:
         ui.notify('Please enter a valid numeric dividend yield.', type='warning')
@@ -157,118 +141,56 @@ async def generate_surface():
         now = time.time()
 
         if cached_entry and (now - cached_entry['timestamp']) < Config.CACHE_TTL:
-            age_min = (now - cached_entry['timestamp']) / 60
-            ui.notify(f'Using cached chain for {symbol} ({age_min:.0f}m old)')
-            frames = cached_entry['frames']
+            ui.notify(f'Using cached data for {symbol}')
+            history_data = cached_entry['history']
             s_nought = cached_entry['spot']
         else:
-            ui.notify(f'Fetching option chains for {symbol}...')
+            ui.notify(f'Fetching market data for {symbol}...')
             ticker_object = yf.Ticker(symbol)
 
-            # 2. Fetch Spot Price
-            s_nought = await async_retry(
-                _get_spot_price_sync, ticker_object,
-                retries=3, base_delay=1.5, max_delay=6.0, label="spot price"
+            # Consolidated Single Fetch: Get 2 years of daily data (used for spot price & EKF calibration)
+            history_data = await async_retry(
+                lambda: ticker_object.history(period='2y'),
+                retries=3, base_delay=2.0, max_delay=8.0, label="history data"
             )
 
-            # 3. Fetch Expirations
-            expirations = await async_retry(
-                lambda: ticker_object.options,
-                retries=3, base_delay=3.0, max_delay=15.0, label="options expirations"
-            )
-
-            if not expirations:
-                ui.notify(f'No options data available for {symbol}.', type='negative')
+            if history_data.empty:
+                ui.notify(f'Failed to retrieve price history for {symbol}.', type='negative')
                 return
 
-            today_date = datetime.date.today()
-            target_expirations = []
-            for exp in expirations:
-                exp_date = pd.to_datetime(exp).date()
-                days_to_exp = (exp_date - today_date).days
-                if 180 <= days_to_exp <= 365:
-                    target_expirations.append(exp)
+            s_nought = float(history_data['Close'].iloc[-1])
 
-            target_expirations = target_expirations[:Config.MAX_EXPIRATIONS]
-            if not target_expirations:
-                ui.notify(f'No options found in 180-365 DTE range for {symbol}.', type='warning')
-                return
-
-            # 4. Fetch Option Chains
-            frames = []
-            for i, expiry in enumerate(target_expirations):
-                try:
-                    chain = await async_retry(
-                        ticker_object.option_chain, expiry,
-                        retries=3, base_delay=3.0, max_delay=15.0, label=f"chain {expiry}"
-                    )
-                    calls, puts = chain.calls.copy(), chain.puts.copy()
-                    calls['type'], puts['type'] = 'Call', 'Put'
-
-                    full_chain = pd.concat([calls, puts], ignore_index=True)
-                    full_chain['expiration'] = expiry
-
-                    expiry_date = pd.to_datetime(expiry).date()
-                    days_to_expiry = (expiry_date - today_date).days
-                    full_chain['T'] = max(days_to_expiry, 1) / 365.0
-
-                    clean_columns = ['expiration', 'T', 'strike', 'type', 'bid', 'ask', 'lastPrice', 'volume']
-                    frames.append(full_chain[clean_columns])
-
-                    if i < len(target_expirations) - 1:
-                        await asyncio.sleep(1.0)
-
-                except Exception as e:
-                    print(f"Error fetching chain for expiry {expiry}: {e}")
-                    continue
-
-            if not frames:
-                ui.notify('Could not retrieve option chain data.', type='negative')
-                return
-
-            # Store in Cache
+            # Cache raw market data
             _MARKET_CACHE[symbol] = {
-                'frames': frames,
+                'history': history_data,
                 'spot': s_nought,
                 'timestamp': time.time()
             }
 
-        # 5. Process Options Data
-        surface_df = pd.concat(frames, ignore_index=True)
-        surface_df['C_market'] = (surface_df['bid'] + surface_df['ask']) / 2
-        surface_df['C_market'] = surface_df['C_market'].fillna(surface_df['lastPrice'])
-        surface_df.loc[surface_df['C_market'] <= 0, 'C_market'] = surface_df['lastPrice']
-
-        filtered_df = surface_df[
-            (surface_df['strike'] >= s_nought * 0.80) &
-            (surface_df['strike'] <= s_nought * 1.20) &
-            (surface_df['C_market'] > 0.01)
-        ].copy()
-
-        # 6. Run CPU Calibration Pipeline
-        ui.notify('Calibrating Heston surface...')
-        strikes_axis, target_ttms, vol_matrix, params = await run.cpu_bound(
-            pipeline, filtered_df, s_nought, symbol, q
+        # 2. Run CPU Calibration Pipeline
+        ui.notify('Calibrating Heston model & computing fair prices...')
+        strikes_axis, target_ttms, price_matrix, params = await run.cpu_bound(
+            pipeline, history_data, s_nought, q
         )
 
-        # 7. Render Surface Plot
+        # 3. Render Fair Price Surface
         X_grid, Y_grid = np.meshgrid(strikes_axis, target_ttms)
-        Z_grid = np.array(vol_matrix)
+        Z_grid = np.array(price_matrix)
 
         fig = go.Figure(data=[go.Surface(
             x=X_grid,
             y=Y_grid * 365,
             z=Z_grid,
-            colorscale=[[0, '#1b2a4a'], [0.5, '#3d6fd6'], [1, '#f2f3f5']],
+            colorscale=[[0, '#1b2a4a'], [0.5, '#3d6fd6'], [1, '#7fd8a4']],
             showscale=True,
-            colorbar=dict(title='IV', tickfont=dict(color=Config.MUTED), title_font=dict(color=Config.MUTED))
+            colorbar=dict(title='Price ($)', tickfont=dict(color=Config.MUTED), title_font=dict(color=Config.MUTED))
         )])
-        fig.update_layout(**create_dark_layout(f'{symbol}  ·  Implied Volatility Surface'))
+        fig.update_layout(**create_dark_layout(f'{symbol}  ·  Heston Fair Call Option Price Surface ($)'))
         fig.update_layout(autosize=True, height=700)
 
         plotly_display.update_figure(fig)
 
-        # 8. Update UI Statistics
+        # 4. Update UI Statistics
         kappa, theta, vol_of_vol, rho, v0 = params
         stats_spot.set_text(f'${s_nought:,.2f}')
         stats_kappa.set_text(f'{kappa:.4f}')
@@ -363,7 +285,7 @@ default_fig.update_layout(**create_dark_layout("Enter a ticker to begin"))
 
 with ui.column().classes('w-full items-center').style('padding: 2.5rem 1.5rem;'):
     with ui.column().classes('items-center gap-1').style('max-width: 900px; margin-bottom: 2rem;'):
-        ui.label('HESTON-BASED PNL PREDICTION FOR OPTIONS').classes('brand-title text-3xl text-center')
+        ui.label('HESTON OPTION FAIR PRICE SURFACE').classes('brand-title text-3xl text-center')
 
     # Controls Bar
     with ui.row().classes('items-center gap-3 panel-card').style('padding: 1.1rem 1.5rem; width: 100%; max-width: 900px;'):
@@ -380,22 +302,20 @@ with ui.column().classes('w-full items-center').style('padding: 2.5rem 1.5rem;')
             step=0.1
         ).props('outlined dense').classes('w-28')
 
-        # Estimation Helper Pop-up Icon
         with ui.icon('help_outline', size='sm', color='grey-5').classes('cursor-pointer'):
             with ui.menu().classes('p-3 bg-zinc-900 border border-zinc-700 max-w-xs'):
                 ui.markdown('''
                 **Estimating Dividend Yield ($q$):**
-                * **Growth/Tech (NVDA, AMZN):** Set to `0.00%`.
-                * **Index ETFs (SPY, QQQ):** Use `1.20%`–`1.50%`.
-                * **Dividend Stock (KO, XOM):** Use Trailing 12M Yield from Financial sites (e.g., Yahoo, Finviz).
-                * **Formula:** `(Total Annual Dividends / Spot Price) * 100`
+                * **Growth/Tech (NVDA, AMZN):** `0.00%`
+                * **Index ETFs (SPY, QQQ):** `1.20%`–`1.50%`
+                * **Dividend Stock (KO, XOM):** Use Trailing 12M Yield from Finviz/Yahoo.
                 ''').classes('text-xs text-gray-300')
 
         run_button = ui.button('GENERATE SURFACE', on_click=generate_surface).classes('run-btn').props('unelevated')
         spinner = ui.spinner(size='lg', color='green-4').classes('ml-2')
         spinner.set_visibility(False)
 
-        ui.label('180–365 DTE chain').classes('mono-label').style('margin-left: auto;')
+        ui.label('180–365 DTE · FFT Heston Pricing').classes('mono-label').style('margin-left: auto;')
 
     # 3D Plot Display
     with ui.column().classes('panel-card').style('width: 100%; max-width: 900px; margin-top: 1.5rem; padding: 0.75rem;'):
