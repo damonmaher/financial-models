@@ -1,11 +1,33 @@
+from __future__ import annotations
+
+import datetime
+import time
+import numpy as np
+from os import listdir
 from nicegui import run, ui
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import yfinance as yf
+
+# Configure custom session to prevent Yahoo 403 blocking on Render
+session = requests.Session()
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    )
+})
 
 
 async def req_csv():
-  # Wrap the entire function so errors report back to the UI rather than hanging
   try:
     ticker_str = ticker_input.value.strip().upper()
-    ticker_object = yf.Ticker(ticker_str)
+    if not ticker_str:
+      ui.notify("Please enter a valid ticker symbol.", type="warning")
+      return
+
+    ticker_object = yf.Ticker(ticker_str, session=session)
 
     # Set current stock price using fast_info or history fallback
     s_nought = None
@@ -49,7 +71,10 @@ async def req_csv():
       expirations = None
 
     if not expirations:
-      ui.notify(f"No options data available for {ticker_str}.", type="negative")
+      ui.notify(
+          f"No options data available or access blocked for {ticker_str}.",
+          type="negative",
+      )
       return
 
     today_date = datetime.date.today()
@@ -102,7 +127,6 @@ async def req_csv():
 
     frames = await run.io_bound(fetch_all_chains)
 
-    # GUARD: Ensure frames is not empty before concatenating
     if not frames:
       ui.notify(
           f"Yahoo Finance blocked or returned empty option chains for"
@@ -166,7 +190,12 @@ async def req_csv():
     )
     fig.update_layout(autosize=True, height=700)
 
-    plotly_display.update_figure(fig)
+    # Standard NiceGUI Plotly element update
+    if hasattr(plotly_display, "figure"):
+      plotly_display.figure = fig
+      plotly_display.update()
+    elif hasattr(plotly_display, "update_figure"):
+      plotly_display.update_figure(fig)
 
     kappa, theta, vol_of_vol, rho, v0 = params
     stats_kappa.set_text(f"{kappa:.4f}")
