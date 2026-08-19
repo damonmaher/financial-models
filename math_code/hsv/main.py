@@ -70,6 +70,26 @@ def yf_retry(func, *args, retries=4, base_delay=1.5, **kwargs):
     raise last_exc
 
 
+def yf_retry_slow(func, *args, retries=5, base_delay=8.0, **kwargs):
+    """Same as yf_retry, but with a much longer backoff schedule for the
+    options endpoints specifically (.options / .option_chain()). These get
+    genuinely rate-limited (a real YFRateLimitError, not a silent block)
+    under burst traffic, and Yahoo's cooldown window for it tends to run
+    30-60s - a short backoff just re-triggers the limit on every retry.
+    Delays: ~8s, 16s, 32s, 64s (capped) between attempts."""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                delay = min(base_delay * (2 ** attempt), 60)
+                print(f"Rate limited, waiting {delay:.0f}s before retry {attempt + 2}/{retries}...")
+                time.sleep(delay)
+    raise last_exc
+
+
 ## ---------- Parameters -----------
 
 cmarket_df = 0
@@ -130,10 +150,10 @@ def req_csv():
 
     #Extract expiration dates
     try:
-        expirations = yf_retry(lambda: ticker_object.options)
+        expirations = yf_retry_slow(lambda: ticker_object.options)
     except Exception as e:
         print(f"yfinance error fetching expirations for '{ticker_input.value}': {type(e).__name__}: {e}")
-        ui.notify(f'Could not fetch option expirations: {e}', type='negative')
+        ui.notify(f'Could not fetch option expirations (rate limited): {e}', type='negative')
         return None, None
 
     if not expirations:
