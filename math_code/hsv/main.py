@@ -1,9 +1,9 @@
-#!/usr acquisition/env python3
+#!/usr/bin/env python3
 
 import asyncio
 import datetime
 import time
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 
 import numpy as np
 import pandas as pd
@@ -25,11 +25,11 @@ class Config:
     GREEN = '#7fd8a4'
     
     MAX_EXPIRATIONS = 3
-    CACHE_TTL = 15 * 60  # 15 minutes in seconds
+    CACHE_TTL = 15 * 60  # 15 minutes
 
-# ---------- Caches ----------
+# ---------- Cache ----------
 
-# Structure: ticker -> {'frames': List[pd.DataFrame], 'spot': float, 'q': float, 'timestamp': float}
+# Structure: ticker -> {'frames': List[pd.DataFrame], 'spot': float, 'timestamp': float}
 _MARKET_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # ---------- Plotly Helper Functions ----------
@@ -72,7 +72,7 @@ def create_dark_layout(title: str) -> dict:
         margin=dict(l=10, r=10, t=50, b=10),
     )
 
-# ---------- Async Retry & Fetching Helpers ----------
+# ---------- Async Fetching Helpers ----------
 
 async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, label="request", **kwargs):
     """Executes func in an io_bound thread with non-blocking exponential backoff retries."""
@@ -90,7 +90,7 @@ async def async_retry(func, *args, retries=3, base_delay=2.0, max_delay=12.0, la
     raise last_exc
 
 def _get_spot_price_sync(ticker_object: yf.Ticker) -> float:
-    """Uses lightweight fast_info endpoint to avoid overhead of heavy history() calls."""
+    """Uses lightweight fast_info endpoint to avoid heavy history() requests."""
     try:
         return float(ticker_object.fast_info['lastPrice'])
     except Exception:
@@ -98,21 +98,6 @@ def _get_spot_price_sync(ticker_object: yf.Ticker) -> float:
         if hist.empty:
             raise ValueError("Empty price history returned")
         return float(hist['Close'].iloc[-1])
-
-def _get_dividend_yield_sync(ticker_object: yf.Ticker, spot_price: float) -> float:
-    """Calculates TTM dividend yield using native yfinance session."""
-    q = 0.0
-    try:
-        dividends = ticker_object.get_dividends()
-        if dividends is not None and not dividends.empty:
-            tz = dividends.index.tz
-            cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=365)
-            ttm_dividends = float(dividends[dividends.index >= cutoff].sum())
-            if spot_price > 0:
-                q = ttm_dividends / spot_price
-    except Exception as e:
-        print(f"Could not fetch dividend yield: {e}")
-    return q
 
 # ---------- Calibration CPU Pipeline ----------
 
@@ -154,6 +139,13 @@ async def generate_surface():
         ui.notify('Please enter a valid ticker symbol.', type='warning')
         return
 
+    try:
+        # Convert entered percentage yield to decimal (e.g., 1.5% -> 0.015)
+        q = float(q_input.value or 0.0) / 100.0
+    except ValueError:
+        ui.notify('Please enter a valid numeric dividend yield.', type='warning')
+        return
+
     # Lock UI controls
     run_button.disable()
     spinner.set_visibility(True)
@@ -166,27 +158,20 @@ async def generate_surface():
 
         if cached_entry and (now - cached_entry['timestamp']) < Config.CACHE_TTL:
             age_min = (now - cached_entry['timestamp']) / 60
-            ui.notify(f'Using cached data for {symbol} ({age_min:.0f}m old)')
+            ui.notify(f'Using cached chain for {symbol} ({age_min:.0f}m old)')
             frames = cached_entry['frames']
             s_nought = cached_entry['spot']
-            q = cached_entry['q']
         else:
-            ui.notify(f'Fetching market data for {symbol}...')
+            ui.notify(f'Fetching option chains for {symbol}...')
             ticker_object = yf.Ticker(symbol)
 
-            # 2. Fetch Spot Price via fast_info
+            # 2. Fetch Spot Price
             s_nought = await async_retry(
                 _get_spot_price_sync, ticker_object,
                 retries=3, base_delay=1.5, max_delay=6.0, label="spot price"
             )
 
-            # 3. Fetch Dividend Yield
-            q = await async_retry(
-                _get_dividend_yield_sync, ticker_object, s_nought,
-                retries=2, base_delay=1.5, max_delay=4.0, label="dividends"
-            )
-
-            # 4. Fetch Expirations
+            # 3. Fetch Expirations
             expirations = await async_retry(
                 lambda: ticker_object.options,
                 retries=3, base_delay=3.0, max_delay=15.0, label="options expirations"
@@ -209,7 +194,7 @@ async def generate_surface():
                 ui.notify(f'No options found in 180-365 DTE range for {symbol}.', type='warning')
                 return
 
-            # 5. Fetch Option Chains
+            # 4. Fetch Option Chains
             frames = []
             for i, expiry in enumerate(target_expirations):
                 try:
@@ -245,11 +230,10 @@ async def generate_surface():
             _MARKET_CACHE[symbol] = {
                 'frames': frames,
                 'spot': s_nought,
-                'q': q,
                 'timestamp': time.time()
             }
 
-        # 6. Process Options Data
+        # 5. Process Options Data
         surface_df = pd.concat(frames, ignore_index=True)
         surface_df['C_market'] = (surface_df['bid'] + surface_df['ask']) / 2
         surface_df['C_market'] = surface_df['C_market'].fillna(surface_df['lastPrice'])
@@ -261,13 +245,13 @@ async def generate_surface():
             (surface_df['C_market'] > 0.01)
         ].copy()
 
-        # 7. Run CPU Calibration Pipeline
+        # 6. Run CPU Calibration Pipeline
         ui.notify('Calibrating Heston surface...')
         strikes_axis, target_ttms, vol_matrix, params = await run.cpu_bound(
             pipeline, filtered_df, s_nought, symbol, q
         )
 
-        # 8. Render Surface Plot
+        # 7. Render Surface Plot
         X_grid, Y_grid = np.meshgrid(strikes_axis, target_ttms)
         Z_grid = np.array(vol_matrix)
 
@@ -284,7 +268,7 @@ async def generate_surface():
 
         plotly_display.update_figure(fig)
 
-        # 9. Update UI Statistics
+        # 8. Update UI Statistics
         kappa, theta, vol_of_vol, rho, v0 = params
         stats_spot.set_text(f'${s_nought:,.2f}')
         stats_kappa.set_text(f'{kappa:.4f}')
@@ -382,18 +366,36 @@ with ui.column().classes('w-full items-center').style('padding: 2.5rem 1.5rem;')
         ui.label('HESTON-BASED PNL PREDICTION FOR OPTIONS').classes('brand-title text-3xl text-center')
 
     # Controls Bar
-    with ui.row().classes('items-center gap-4 panel-card').style('padding: 1.1rem 1.5rem; width: 100%; max-width: 900px;'):
+    with ui.row().classes('items-center gap-3 panel-card').style('padding: 1.1rem 1.5rem; width: 100%; max-width: 900px;'):
         ticker_input = ui.input(
             label='Ticker Symbol',
             value='NVDA',
-            placeholder='Enter Ticker Symbol'
-        ).props('outlined dense').classes('w-40')
-        
+            placeholder='Symbol'
+        ).props('outlined dense').classes('w-32')
+
+        q_input = ui.number(
+            label='Div Yield %',
+            value=0.0,
+            format='%.2f',
+            step=0.1
+        ).props('outlined dense').classes('w-28')
+
+        # Estimation Helper Pop-up Icon
+        with ui.icon('help_outline', size='sm', color='grey-5').classes('cursor-pointer'):
+            with ui.menu().classes('p-3 bg-zinc-900 border border-zinc-700 max-w-xs'):
+                ui.markdown('''
+                **Estimating Dividend Yield ($q$):**
+                * **Growth/Tech (NVDA, AMZN):** Set to `0.00%`.
+                * **Index ETFs (SPY, QQQ):** Use `1.20%`–`1.50%`.
+                * **Dividend Stock (KO, XOM):** Use Trailing 12M Yield from Financial sites (e.g., Yahoo, Finviz).
+                * **Formula:** `(Total Annual Dividends / Spot Price) * 100`
+                ''').classes('text-xs text-gray-300')
+
         run_button = ui.button('GENERATE SURFACE', on_click=generate_surface).classes('run-btn').props('unelevated')
         spinner = ui.spinner(size='lg', color='green-4').classes('ml-2')
         spinner.set_visibility(False)
-        
-        ui.label('180–365 DTE chain · FFT-priced Heston surface').classes('mono-label').style('margin-left: auto;')
+
+        ui.label('180–365 DTE chain').classes('mono-label').style('margin-left: auto;')
 
     # 3D Plot Display
     with ui.column().classes('panel-card').style('width: 100%; max-width: 900px; margin-top: 1.5rem; padding: 0.75rem;'):
