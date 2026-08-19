@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import yfinance as yf
+
+
 def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
   """Best-effort market cap lookup per ticker using robust fast_info attribute
 
@@ -10,12 +15,12 @@ def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
       ticker = yf.Ticker(t)
       fast = ticker.fast_info
 
-      # Try attribute access (FastInfo object)
+      # Try attribute access
       cap = getattr(fast, "market_cap", None) or getattr(
           fast, "marketCap", None
       )
 
-      # Try dictionary access if fast_info behaves like a dict
+      # Try dictionary access
       if cap is None and hasattr(fast, "get"):
         cap = fast.get("market_cap") or fast.get("marketCap")
 
