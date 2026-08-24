@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import datetime
-import itertools
 
 import set_params
 import learn
@@ -73,7 +72,6 @@ def req_csv():
     required_cols = ['Open', 'High', 'Low', 'Close']
 
     if isinstance(df.columns, pd.MultiIndex):
-        # Select the specific ticker level from MultiIndex
         ohlc_df = df.xs(ticker_symbol, level=1, axis=1)[required_cols]
     else:
         ohlc_df = df[required_cols]
@@ -81,7 +79,7 @@ def req_csv():
     # Drop any incomplete rows and convert to float64
     ohlc_df = ohlc_df.dropna().astype(float)
 
-    # Extract close_prices directly from cleaned OHLC data for guaranteed index alignment
+    # Extract close_prices directly from cleaned OHLC data
     close_prices = ohlc_df['Close']
 
     # ------ Instantiate Parameters -------
@@ -92,15 +90,14 @@ def req_csv():
     # 2. Pass calibrated parameters and aligned close prices to HMM matrix builder
     A, B, pi = learn.matrices(kappa, theta, sigma, close_prices)
 
-    #Observations
+    # Observations
     daily_log_returns = np.log(close_prices / close_prices.shift(1))
     rolling_drift_10d = daily_log_returns.rolling(window=10).mean()
     drift = rolling_drift_10d.dropna().values
 
     print(f"Mean Reversion: {kappa}, Long-Term Variance: {theta}, Vol-of-Vol: {sigma}")
-    print(f"Transition: {A}, Emission: {B}, Pi: {pi}")
 
-    #Discretize drifts by sorting into buckets
+    # Discretize drifts by sorting into buckets
     drift_flat = drift.flatten()
 
     b_30 = 0.30 / 252
@@ -116,95 +113,114 @@ def req_csv():
     obs[(drift_flat >= -b_30) & (drift_flat < -b_15)] = 5
     obs[drift_flat < -b_30] = 6
 
-    #Baum-Welch learning
+    # Baum-Welch learning
     A_hmm, B_hmm, pi_hmm = hmm.baum_welch_vec(obs, A, B, pi)
 
-    print(f"Transition: {A_hmm}, Emission: {B_hmm}, Pi: {pi_hmm}")
-
-    # Isolate data in the past week
+    # Isolate historical data in the past week
     past_week = close_prices.tail(5)
     last_date = past_week.index[-1]
     last_price = float(np.ravel(past_week.values)[-1])
 
-    # Plot the historical data first
+    # Plot the historical data
     global_fig.add_trace(go.Scatter(
         x=past_week.index.strftime('%Y-%m-%d').tolist(),
         y=np.ravel(past_week.values),
         mode='lines+markers',
-        name='Past Week',
+        name='Past Week Historical',
         line=dict(color=WHITE, width=3),
         marker=dict(size=6, color=WHITE, line=dict(width=1, color=BG_PANEL))
     ))
 
     # ----- 2. PREPARE THE FUTURE DATES -----
-    # Generate the next 5 business days
     future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=5)
-
-    # Prepend the last historical date to the future dates so the lines connect!
     raw_plot_dates = [last_date] + list(future_dates)
-
     plot_dates_str = [d.strftime('%Y-%m-%d') for d in raw_plot_dates]
 
-    # ----- 3. CALCULATE ALL POSSIBLE 5-DAY PATH PROBABILITIES -----
+    # ----- 3. VECTORIZED EXPECTED PATH FORECASTING (\alpha_{t+n} = \alpha_t @ A^n) -----
     alpha, c = hmm.forward_vec(obs, A_hmm, B_hmm, pi_hmm)
     today_probs = alpha[-1] / (np.sum(alpha[-1]) + 1e-300)
-    tomorrow_probs = today_probs @ A_hmm
 
-    all_paths = list(itertools.product(range(7), repeat=5))
-    path_probabilities = []
+    # Midpoint daily drifts matching state bounds (State 0: Sev Bullish -> State 6: Sev Bearish)
+    state_drifts_annual = np.array([0.45, 0.225, 0.10, 0.0, -0.10, -0.225, -0.45])
+    daily_drifts = state_drifts_annual / 252
 
-    for path in all_paths:
-        prob = tomorrow_probs[path[0]]
-        for i in range(4):
-            prob *= A_hmm[path[i], path[i+1]]
-        if prob > 1e-8:
-            path_probabilities.append((prob, path))
+    # Compute expected forward state distribution and expected price trajectory
+    expected_prices = [last_price]
+    curr_expected_price = last_price
+    current_probs = today_probs.copy()
 
-    # Sort paths from Most Likely to Least Likely
-    path_probabilities.sort(key=lambda x: x[0], reverse=True)
-    top_n = min(50, len(path_probabilities))
-    top_paths = path_probabilities[:top_n]
+    for _ in range(5):
+        current_probs = current_probs @ A_hmm
+        expected_daily_drift = np.dot(current_probs, daily_drifts)
+        curr_expected_price *= np.exp(expected_daily_drift)
+        expected_prices.append(curr_expected_price)
 
-    # ----- 4. CALCULATE EXPECTED PRICES & PLOT GRADIENT -----
-    bucket_means_annual = np.array([0.45, 0.225, 0.10, 0.0, -0.10, -0.225, -0.45])
-    daily_drifts = bucket_means_annual / 252
+    # ----- 4. UNBIASED STOCHASTIC MONTE CARLO SIMULATION -----
+    np.random.seed(42)
+    num_simulations = 250
+    simulated_paths = []
 
-    # Green (likely / near) -> red (unlikely / far), gradient encodes rank likelihood
-    start_rgb = (127, 216, 164)   # GREEN
-    end_rgb = (255, 107, 107)     # RED
+    for _ in range(num_simulations):
+        state = np.random.choice(7, p=today_probs)
+        path_prices = [last_price]
+        curr_p = last_price
 
-    for rank, (prob, path) in enumerate(top_paths):
-        # Start the price array with the last historical price to close the gap
-        prices = [last_price]
-        curr_price = last_price
+        for _ in range(5):
+            curr_p *= np.exp(daily_drifts[state])
+            path_prices.append(curr_p)
+            state = np.random.choice(7, p=A_hmm[state])
 
-        for state in path:
-            curr_price *= np.exp(daily_drifts[state])
-            prices.append(curr_price)
+        simulated_paths.append(path_prices)
 
-        ratio = rank / max(1, (top_n - 1))
-        r = int(start_rgb[0] + (end_rgb[0] - start_rgb[0]) * ratio)
-        g = int(start_rgb[1] + (end_rgb[1] - start_rgb[1]) * ratio)
-        b = int(start_rgb[2] + (end_rgb[2] - start_rgb[2]) * ratio)
+    simulated_paths = np.array(simulated_paths)
 
-        opacity = max(0.12, 1.0 - (ratio * 0.85))
-        color = f'rgba({r}, {g}, {b}, {opacity:.2f})'
+    # Plot sample simulated regime trajectories (40 transparent paths)
+    for i in range(min(40, num_simulations)):
+        path_y = simulated_paths[i]
+        final_ret = (path_y[-1] - last_price) / last_price
+        path_color = 'rgba(127, 216, 164, 0.12)' if final_ret >= 0 else 'rgba(255, 107, 107, 0.12)'
 
-        is_top = rank == 0
-
-        # Add the line to the chart
         global_fig.add_trace(go.Scatter(
             x=plot_dates_str,
-            y=prices,
+            y=path_y,
             mode='lines',
-            line=dict(color=color, width=4 if is_top else 1.4),
-            showlegend=(rank == 0 or rank == top_n - 1),
-            name='Most Likely Path' if rank == 0 else ('Least Likely (Top 50)' if rank == top_n - 1 else None),
+            line=dict(color=path_color, width=1),
+            showlegend=False,
             hoverinfo='skip'
         ))
 
+    # Add 10th and 90th Percentile Quantile Bounds
+    p10 = np.percentile(simulated_paths, 10, axis=0)
+    p90 = np.percentile(simulated_paths, 90, axis=0)
+
+    global_fig.add_trace(go.Scatter(
+        x=plot_dates_str,
+        y=p90,
+        mode='lines',
+        line=dict(color=BLUE, width=1.5, dash='dash'),
+        name='90th Percentile Bound'
+    ))
+
+    global_fig.add_trace(go.Scatter(
+        x=plot_dates_str,
+        y=p10,
+        mode='lines',
+        line=dict(color=ORANGE, width=1.5, dash='dash'),
+        name='10th Percentile Bound'
+    ))
+
+    # Add primary Expected HMM Trajectory line
+    global_fig.add_trace(go.Scatter(
+        x=plot_dates_str,
+        y=expected_prices,
+        mode='lines+markers',
+        name='Expected HMM Path (alpha_t * A^n)',
+        line=dict(color=GREEN, width=3.5),
+        marker=dict(size=6, color=GREEN)
+    ))
+
     global_fig.update_layout(**dark_layout(
-        title=f"{ticker_symbol.upper()}  ·  Past Week vs. Regime-Weighted Prediction Paths"
+        title=f"{ticker_symbol.upper()}  ·  Past Week vs. Unbiased Expected Regime Trajectory"
     ))
     global_fig.update_layout(xaxis_title="Date", yaxis_title="Price")
 
@@ -214,7 +230,7 @@ def req_csv():
     stats_kappa.set_text(f'{kappa:.5f}')
     stats_theta.set_text(f'{theta:.5f}')
     stats_sigma.set_text(f'{sigma:.5f}')
-    stats_regime.set_text(REGIME_LABELS[int(np.argmax(pi_hmm))])
+    stats_regime.set_text(REGIME_LABELS[int(np.argmax(today_probs))])
     stats_card.set_visibility(True)
 
 
@@ -255,12 +271,6 @@ ui.add_head_html('''
         letter-spacing: 0.02em;
         color: #f2f3f5;
         text-transform: uppercase;
-    }
-    .brand-subtitle {
-        font-family: 'EB Garamond', serif;
-        font-style: italic;
-        color: #7fd8a4;
-        font-size: 1.3rem;
     }
     .mono-label {
         font-family: 'JetBrains Mono', monospace;
