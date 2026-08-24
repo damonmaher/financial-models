@@ -4,7 +4,11 @@ data_handler.py
 Handles all market-data plumbing for the Black-Litterman optimizer:
   - pulling historical prices from yfinance
   - building the (annualized) covariance matrix
-  - pulling market caps and turning them into market-implied weights (w_mkt)
+  - turning user-entered market caps into market-implied weights (w_mkt)
+
+Market caps are entered manually in the UI (yfinance's get_info()/quoteSummary
+are unreliable in this hosting environment), so this module just normalizes
+whatever {ticker: market_cap} dict it's handed - no network call involved.
 
 Nothing in this module knows about NiceGUI or the optimization math -
 it only produces plain numpy/pandas objects that black_litterman.py and
@@ -103,32 +107,15 @@ def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> 
     return cov_matrix, log_returns
 
 
-def fetch_market_caps(tickers: list[str]) -> dict[str, float | None]:
-    """
-    Best-effort market cap lookup per ticker. Returns None for any ticker
-    where yfinance doesn't expose a market cap (e.g. some ETFs/indices) so
-    the caller can decide how to handle the gap.
-    """
-    caps: dict[str, float | None] = {}
-    for t in tickers:
-        cap = None
-        try:
-            info = yf.Ticker(t).get_info()
-            cap = info.get("marketCap")
-        except Exception:
-            cap = None
-        caps[t] = cap
-    return caps
-
-
 def compute_market_weights(caps: dict[str, float | None]) -> tuple[np.ndarray, list[str], bool]:
     """
-    Convert a {ticker: market_cap} dict into a market-cap-weighted vector
-    that sums to 1, in the same order as caps.keys().
+    Convert a {ticker: market_cap} dict (user-entered, any consistent unit)
+    into a market-cap-weighted vector that sums to 1, in the same order as
+    caps.keys(). This is a straight normalization: w_i = cap_i / sum(caps).
 
     Returns (weights, tickers_in_order, used_fallback) where used_fallback
-    is True if one or more market caps were missing and we fell back to
-    equal weighting across the whole universe.
+    is True if one or more market caps were missing/zero/negative and we
+    fell back to equal weighting across the whole universe.
     """
     tickers = list(caps.keys())
     values = [caps[t] for t in tickers]

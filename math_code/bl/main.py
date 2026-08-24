@@ -5,16 +5,18 @@ NiceGUI frontend for the Black-Litterman / Max-Sharpe portfolio optimizer.
 
 Flow:
   1. User builds a universe of tickers.
-  2. User optionally adds "views" (I believe TICKER will return X%), each
+  2. User manually enters a market cap per ticker (any consistent unit);
+     w_mkt is just those caps normalized over their sum.
+  3. User optionally adds "views" (I believe TICKER will return X%), each
      view maps to a row of the pick matrix P and an entry of Q.
-  3. On "Run optimization":
-       - pull price history + market caps from yfinance     (data_handler)
+  4. On "Run optimization":
+       - pull price history from yfinance                    (data_handler)
+       - normalize user-entered market caps into w_mkt        (data_handler)
        - compute Sigma, Pi, Omega, mu_BL                     (black_litterman)
        - compute max-Sharpe weights off mu_BL                (optimizer)
-  4. Results render as a covariance heatmap, an equilibrium/BL returns
+  5. Results render as a covariance heatmap, an equilibrium/BL returns
      table, and a treemap of the optimal weights.
 """
-
 from __future__ import annotations
 
 import numpy as np
@@ -60,6 +62,11 @@ class PortfolioApp:
         # ---- universe ----
         self.tickers: list[str] = []
 
+        # ---- market caps: user-entered, {ticker: market_cap}. Any consistent
+        # unit works (millions, billions, raw dollars) since w_mkt is just the
+        # normalized proportions. ----
+        self.market_caps: dict[str, float] = {}
+
         # ---- views: each {id, assets:list[str], weights:dict[str,float], ret_pct:float} ----
         self.views: list[dict] = []
         self._view_id_counter = 0
@@ -93,16 +100,20 @@ class PortfolioApp:
             ui.notify(f"{symbol} is already in the universe.", type="warning")
             return
         self.tickers.append(symbol)
+        self.market_caps.setdefault(symbol, 0.0)
         self.ticker_chips.refresh()
+        self.market_cap_rows.refresh()
 
     def remove_ticker(self, symbol: str):
         self.tickers = [t for t in self.tickers if t != symbol]
+        self.market_caps.pop(symbol, None)
         # drop that ticker from any view that referenced it
         for v in self.views:
             if symbol in v["assets"]:
                 v["assets"].remove(symbol)
                 v["weights"].pop(symbol, None)
         self.ticker_chips.refresh()
+        self.market_cap_rows.refresh()
         self.view_rows.refresh()
 
     def add_view(self):
@@ -163,12 +174,12 @@ class PortfolioApp:
             self.log("> computing covariance matrix...")
             self.cov_matrix, _ = await run.io_bound(dh.compute_covariance, price_data, periods_per_year)
 
-            self.log("> pulling market caps...")
-            caps = await run.io_bound(dh.fetch_market_caps, self.tickers)
+            self.log("> normalizing user-entered market caps...")
+            caps = {t: self.market_caps.get(t, 0.0) for t in self.tickers}
             self.w_mkt, ordered_tickers, self.market_cap_fallback = dh.compute_market_weights(caps)
             # dh.compute_market_weights preserves dict order, which matches self.tickers
             if self.market_cap_fallback:
-                self.log("! one or more market caps unavailable -> falling back to equal weighting", "amber")
+                self.log("! one or more market caps missing/zero -> falling back to equal weighting", "amber")
 
             self.log("> computing implied equilibrium returns (Pi)...")
             self.pi = bl.implied_equilibrium_returns(self.cov_matrix.values, self.w_mkt, self.risk_aversion)
@@ -219,6 +230,23 @@ class PortfolioApp:
                 ui.chip(text=t, removable=True, color=None).classes("qp-ticker-chip") \
                     .on_value_change(lambda e, sym=t: None if e.value else self.remove_ticker(sym))
 
+    @ui.refreshable
+    def market_cap_rows(self):
+        if not self.tickers:
+            ui.label("Add tickers above to enter their market caps.") \
+                .classes("qp-mono qp-muted").style("font-size:0.78rem;")
+            return
+        ui.label(
+            "Enter a market cap per ticker (any consistent unit — e.g. all in "
+            "billions). w_mkt is just each cap normalized over the total."
+        ).classes("qp-mono qp-muted").style("font-size:0.72rem;")
+        with ui.column().classes("w-full gap-2"):
+            for t in self.tickers:
+                ui.number(
+                    label=t, value=self.market_caps.get(t, 0.0), step=1, format="%.2f", min=0
+                ).classes("qp-mono w-full").props("outlined dense") \
+                    .on_value_change(lambda e, sym=t: self.market_caps.__setitem__(sym, e.value or 0.0))
+
     def build_universe_panel(self):
         with ui.column().classes("qp-panel w-full").style("padding:0;"):
             ui.label("01 — UNIVERSE").classes("qp-panel-header w-full")
@@ -235,12 +263,18 @@ class PortfolioApp:
                         .classes("qp-btn-ghost").props("unelevated dense")
                 self.ticker_chips()
 
+    def build_market_caps_panel(self):
+        with ui.column().classes("qp-panel w-full").style("padding:0;"):
+            ui.label("02 — MARKET CAPS").classes("qp-panel-header w-full")
+            with ui.column().classes("w-full gap-3").style("padding:16px;"):
+                self.market_cap_rows()
+
     # ------------------------------------------------------------------
     # left panel: parameters
     # ------------------------------------------------------------------
     def build_parameters_panel(self):
         with ui.column().classes("qp-panel w-full").style("padding:0;"):
-            ui.label("02 — PARAMETERS").classes("qp-panel-header w-full")
+            ui.label("03 — PARAMETERS").classes("qp-panel-header w-full")
             with ui.column().classes("w-full gap-3").style("padding:16px;"):
                 with ui.row().classes("w-full gap-3"):
                     ui.number(label="Risk aversion (lambda)", value=self.risk_aversion, step=0.1, format="%.2f") \
@@ -323,7 +357,7 @@ class PortfolioApp:
     def build_views_panel(self):
         with ui.column().classes("qp-panel w-full").style("padding:0;"):
             with ui.row().classes("w-full items-center justify-between qp-panel-header"):
-                ui.label("03 — INVESTOR VIEWS (OPTIONAL)")
+                ui.label("04 — INVESTOR VIEWS (OPTIONAL)")
                 ui.button("+ ADD VIEW", on_click=self.add_view).classes("qp-btn-amber").props("unelevated dense size=sm")
             with ui.column().classes("w-full gap-3").style("padding:16px;"):
                 self.view_rows()
@@ -364,7 +398,7 @@ class PortfolioApp:
         ]
         ui.table(columns=columns, rows=rows, row_key="ticker").classes("qp-table w-full").props("flat dense")
         if self.market_cap_fallback:
-            ui.label("Market caps unavailable for one or more tickers — equal weighting used as w_mkt.") \
+            ui.label("Market cap missing or zero for one or more tickers — equal weighting used as w_mkt.") \
                 .classes("qp-mono").style(f"color:{AMBER}; font-size:0.72rem;")
 
     @ui.refreshable
@@ -473,6 +507,7 @@ class PortfolioApp:
             with ui.row().classes("w-full gap-5 items-start").style("max-width:1320px;"):
                 with ui.column().classes("gap-5").style("width:400px; flex-shrink:0;"):
                     self.build_universe_panel()
+                    self.build_market_caps_panel()
                     self.build_parameters_panel()
                     self.build_views_panel()
 
