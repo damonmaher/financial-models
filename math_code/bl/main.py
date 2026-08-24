@@ -45,6 +45,24 @@ PERIOD_OPTIONS = {"1y": "1y", "2y": "2y", "3y": "3y", "5y": "5y", "10y": "10y"}
 INTERVAL_OPTIONS = {"1d": "Daily", "1wk": "Weekly", "1mo": "Monthly"}
 PERIODS_PER_YEAR = {"1d": 252, "1wk": 52, "1mo": 12}
 
+# How far forward the resulting expected returns / covariance should
+# represent, as a fraction of a year. This is independent of "Lookback"
+# (how much history to train on) and "Bar interval" (sampling frequency).
+HORIZON_OPTIONS = {
+    "5d": "5 Trading Days",
+    "1m": "1 Month",
+    "3m": "3 Months",
+    "6m": "6 Months",
+    "1y": "1 Year",
+}
+HORIZON_YEARS = {
+    "5d": 5 / 252,
+    "1m": 1 / 12,
+    "3m": 3 / 12,
+    "6m": 6 / 12,
+    "1y": 1.0,
+}
+
 
 def plotly_dark_layout(fig: go.Figure, height: int = 420) -> go.Figure:
     fig.update_layout(
@@ -77,6 +95,7 @@ class PortfolioApp:
         self.risk_free_rate = 0.02
         self.period = "3y"
         self.interval = "1wk"
+        self.horizon = "1y"
 
         # ---- computed results ----
         self.cov_matrix = None
@@ -167,12 +186,13 @@ class PortfolioApp:
 
         try:
             periods_per_year = PERIODS_PER_YEAR[self.interval]
+            horizon_years = HORIZON_YEARS[self.horizon]
 
             self.log("> pulling price history via yfinance...")
             price_data = await run.io_bound(dh.fetch_price_history, self.tickers, self.period, self.interval)
 
-            self.log("> computing covariance matrix...")
-            self.cov_matrix, _ = await run.io_bound(dh.compute_covariance, price_data, periods_per_year)
+            self.log(f"> computing covariance matrix (horizon: {HORIZON_OPTIONS[self.horizon]})...")
+            self.cov_matrix, _ = await run.io_bound(dh.compute_covariance, price_data, periods_per_year, horizon_years)
 
             self.log("> normalizing user-entered market caps...")
             caps = {t: self.market_caps.get(t, 0.0) for t in self.tickers}
@@ -272,6 +292,35 @@ class PortfolioApp:
     # ------------------------------------------------------------------
     # left panel: parameters
     # ------------------------------------------------------------------
+    def show_horizon_info(self):
+        with ui.dialog() as dialog, ui.card().classes("qp-panel").style(f"max-width:480px; border:1px solid {BORDER};"):
+            ui.label("FORECAST HORIZON").classes("qp-mono").style(f"color:{ACCENT}; font-size:0.75rem; letter-spacing:0.1em;")
+            ui.label(
+                "This scales Sigma (and everything downstream - Pi, mu_BL, "
+                "expected return/vol) to represent the chosen number of days/"
+                "months ahead, instead of always annualizing to a full year."
+            ).classes("qp-mono").style("font-size:0.82rem; line-height:1.5;")
+            ui.separator().classes("qp-divider")
+            ui.label(
+                "\"Lookback\" (how much history to train on) and \"Forecast "
+                "horizon\" (how far ahead the output represents) are "
+                "independent choices - don't default to the longest lookback "
+                "just because more data is available."
+            ).classes("qp-mono").style(f"font-size:0.82rem; line-height:1.5; color:{AMBER};")
+            ui.label(
+                "A long lookback smooths out noise but can blend in stale, "
+                "regime-shifted data (rate cycles, past crises) that no "
+                "longer describes the market you're forecasting - which is "
+                "its own form of overfitting to a period that isn't "
+                "representative going forward. A short lookback tracks "
+                "current conditions but is noisier and more sensitive to "
+                "a handful of outlier moves. Match the lookback to the "
+                "horizon: short horizons are usually better served by "
+                "shorter, more recent lookback windows, and vice versa."
+            ).classes("qp-mono qp-muted").style("font-size:0.78rem; line-height:1.5;")
+            ui.button("GOT IT", on_click=dialog.close).classes("qp-btn-primary w-full").props("unelevated dense")
+        dialog.open()
+
     def build_parameters_panel(self):
         with ui.column().classes("qp-panel w-full").style("padding:0;"):
             ui.label("03 — PARAMETERS").classes("qp-panel-header w-full")
@@ -284,7 +333,7 @@ class PortfolioApp:
                         .classes("qp-mono").style("flex:1;").props("outlined dense") \
                         .bind_value(self, "tau")
                 with ui.row().classes("w-full gap-3"):
-                    ui.number(label="Risk-free rate", value=self.risk_free_rate, step=0.005, format="%.3f") \
+                    ui.number(label="Risk-free rate (annual)", value=self.risk_free_rate, step=0.005, format="%.3f") \
                         .classes("qp-mono").style("flex:1;").props("outlined dense") \
                         .bind_value(self, "risk_free_rate")
                 with ui.row().classes("w-full gap-3"):
@@ -294,6 +343,12 @@ class PortfolioApp:
                     ui.select(options=INTERVAL_OPTIONS, value=self.interval, label="Bar interval") \
                         .classes("qp-mono").style("flex:1;").props("outlined dense") \
                         .bind_value(self, "interval")
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.select(options=HORIZON_OPTIONS, value=self.horizon, label="Forecast horizon") \
+                        .classes("qp-mono").style("flex:1;").props("outlined dense") \
+                        .bind_value(self, "horizon")
+                    ui.button(icon="info", on_click=self.show_horizon_info) \
+                        .props("flat dense round size=sm").classes("qp-muted")
 
     # ------------------------------------------------------------------
     # left panel: views
@@ -381,7 +436,8 @@ class PortfolioApp:
         fig.update_yaxes(showgrid=False, autorange="reversed")
         plotly_dark_layout(fig, height=420)
         ui.plotly(fig).classes("w-full")
-        ui.label("Annualized sample covariance matrix from log returns.").classes("qp-mono qp-muted").style("font-size:0.72rem;")
+        ui.label(f"Sample covariance matrix from log returns, scaled to a {HORIZON_OPTIONS[self.horizon]} horizon.") \
+            .classes("qp-mono qp-muted").style("font-size:0.72rem;")
 
     @ui.refreshable
     def render_equilibrium(self):

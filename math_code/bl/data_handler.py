@@ -93,17 +93,34 @@ def fetch_price_history(tickers: list[str], period: str = "3y", interval: str = 
     return prices[tickers]
 
 
-def compute_covariance(price_data: pd.DataFrame, periods_per_year: int = 52) -> tuple[pd.DataFrame, pd.DataFrame]:
+def compute_covariance(
+    price_data: pd.DataFrame,
+    periods_per_year: int = 52,
+    horizon_years: float = 1.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Compute log returns and the annualized sample covariance matrix.
+    Compute log returns and the sample covariance matrix, scaled to the
+    chosen forecast horizon.
 
-    periods_per_year defaults to 52 for weekly bars ('1wk' interval above).
+    periods_per_year is the number of bars per year implied by the chosen
+    interval (e.g. 252 for daily, 52 for weekly, 12 for monthly bars) and
+    describes the *sampling* frequency used to estimate the per-bar
+    covariance. horizon_years is how far forward the resulting Sigma (and
+    everything downstream: Pi, mu_BL, expected return/vol) should represent
+    - e.g. 1/12 for a 1-month-ahead view, 1.0 for a 1-year-ahead view.
+
+    Sigma_horizon = Sigma_per_bar * (periods_per_year * horizon_years)
+
+    This is the standard i.i.d. variance-scaling assumption (variance grows
+    linearly with the number of periods), just applied to a partial-year
+    horizon instead of always a full year.
     """
     log_returns = np.log(price_data / price_data.shift(1)).dropna()
     if log_returns.empty:
         raise DataFetchError("Could not compute returns from the downloaded price history.")
 
-    cov_matrix = log_returns.cov() * periods_per_year
+    scale = periods_per_year * horizon_years
+    cov_matrix = log_returns.cov() * scale
     return cov_matrix, log_returns
 
 
