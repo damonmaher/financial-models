@@ -52,10 +52,9 @@ def set_transition_matrix(matrix, kappa, sigma, theta):
         #2: Mean reversion, increase probabilities for matrix[i][i]s
         row[i] += 0.02 * kappa
 
-        #3: Long-term var, bearish skew for bearish states
-        row[6] += 0.5 * theta
-        row[5] += 0.25 * theta
-        row[4] += 0.125 * theta
+        #3: Long-term var, higher chance of collapse in both extremes
+        row[0] += 0.25 * sigma
+        row[6] += 0.25 * sigma
 
         mod_matrix[i] = row
 
@@ -105,9 +104,6 @@ def set_init(drifts, theta):
     pi_base = pi_base / pi_base.sum()
 
     pi_mod = pi_base.copy()
-    pi_mod[6] += 0.5 * theta
-    pi_mod[5] += 0.25 * theta
-    pi_mod[4] += 0.125 * theta
 
     pi_final = pi_mod / pi_mod.sum()
     return pi_final
