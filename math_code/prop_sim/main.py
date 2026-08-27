@@ -135,6 +135,7 @@ def render_prop_sim() -> None:
         ui.label(
             "Research simulation only — historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
+        ui.label("Engine build: 2026.08.27.1").classes("text-xs text-slate-500")
 
         with ui.card().classes("ps-card w-full p-5"):
             ui.label("Simulation setup").classes("text-2xl font-semibold")
