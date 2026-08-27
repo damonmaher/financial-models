@@ -1,7 +1,7 @@
 <!DOCTYPE HTML>
 <html>
     <head>
-        <title>Hidden Markov Model — Explanation | Mahini & Maher Research</title>
+        <title>How Our Models Work | Mahini & Maher Research</title>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
         <link rel="stylesheet" href="assets/css/main.css" />
@@ -24,7 +24,7 @@
                     <ul class="links">
                         <li><a href="index.html">Home</a></li>
                         <li><a href="generic.html">About</a></li>
-                        <li><a href="elements.html">Model Explanation</a></li>
+                        <li><a href="elements.html">How Models Work</a></li>
                     </ul>
                     <a href="#" class="close">Close</a>
                 </div>
@@ -34,8 +34,8 @@
             <section id="wrapper">
                 <header>
                     <div class="inner">
-                        <h2>How Our Hidden Markov Model Works</h2>
-                        <p>We built this model to figure out what "mode" the market is in. Here's the reasoning behind it, explained the way we'd explain it to each other.</p>
+                        <h2>How Our Models Work</h2>
+                        <p>A high-level overview of the ideas and calculations behind each live model.</p>
                     </div>
                 </header>
 
@@ -44,57 +44,24 @@
                     <div class="inner">
 
                         <section>
-                            <h3 class="major">What a Hidden Markov Model actually does</h3>
-                            <p>You can't directly observe what "regime" the market is in. There's no ticker for it. What you can observe is price behavior: returns, volatility, how choppy things feel day to day. A Hidden Markov Model takes that observable data and works backward to estimate the hidden state that's probably producing it.</p>
+                            <h3 class="major">Hidden Markov Model</h3>
+                            <p>A market regime cannot be observed directly, so the model treats it as a hidden state and uses observable price behavior to estimate which state is most likely. Its initial-state probabilities describe where the process may begin, its transition matrix describes how likely one regime is to follow another, and its emission matrix connects each hidden regime to the daily return patterns it tends to produce.</p>
 
-                            <p>So instead of us deciding "the market looks trendy this week" based on a chart, the model assigns probabilities to a handful of underlying states and updates them as new data comes in. It's a statistical way of answering the question every trader asks anyway: what kind of market am I actually in right now?</p>
+                            <p>The forward and backward algorithms calculate state probabilities across the observed history. Baum-Welch learning then uses those probabilities to improve the model's initial, transition, and emission estimates. Once trained, the model normalizes the latest state probabilities and can project them forward through repeated applications of the transition matrix.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">Why regime matters</h3>
-                            <p>A trend-following strategy that prints money in March can bleed you dry in June, and it's not because the strategy got worse. The market changed underneath it. Trend-following needs a trend. Mean-reversion needs the opposite: a range-bound, well-behaved market where things snap back after they stretch too far.</p>
+                            <h3 class="major">Black-Litterman Model</h3>
+                            <p>The model begins with a neutral market baseline instead of relying only on unstable historical return estimates. It combines market-capitalization weights, the covariance matrix, and a risk-aversion coefficient to infer the equilibrium returns that would make the current market portfolio reasonable.</p>
 
-                            <p>Most people figure out which regime they're in after the fact, once the drawdown makes it obvious. The point of the HMM is to give us that read earlier, using returns and volatility as the inputs, so we can size or switch strategies before the regime shift shows up in our P&L.</p>
+                            <p>Investor views are then encoded as expected relative or absolute returns, along with an uncertainty level for each view. Black-Litterman blends those views with the market baseline using Bayesian weighting, so confident views have more influence and uncertain views stay closer to equilibrium. The resulting posterior expected returns feed into portfolio optimization to produce diversified asset weights.</p>
                         </section>
 
                         <section>
-                            <h3 class="major">The intuition, without the math</h3>
-                            <p>The model assumes the market is always sitting in one of a few hidden states, and that each state has its own personality. One might be quiet and low-volatility. Another might be sharply trending. A third might be the kind of chaotic, whipsaw environment where nothing behaves.</p>
+                            <h3 class="major">Heston Stochastic Volatility</h3>
+                            <p>The Heston model allows variance to change over time instead of assuming one constant volatility. Variance is pulled toward a long-run level at a chosen mean-reversion speed while receiving random shocks scaled by its current level. A separate correlation parameter links shocks in the asset price to shocks in variance, capturing the relationship between market moves and changing volatility.</p>
 
-                            <p>Feed it a history of returns and it answers three questions at once: which state we're probably in right now, how likely we are to flip into a different one soon, and what returns typically look like once we're there. Run that same question every day and you get a rolling picture of how the market drifts between regimes over time, not a single snapshot but a path.</p>
-                        </section>
-
-                        <section>
-                            <h3 class="major">The three states, in practice</h3>
-                            <p>In our current build, the model settles on three states that roughly map to conditions any trader would recognize:</p>
-                            <ul>
-                                <li><strong>Stable, low volatility:</strong> quiet, grinding markets</li>
-                                <li><strong>Trending, directional:</strong> clear momentum, one way or the other</li>
-                                <li><strong>High volatility, chaotic:</strong> the kind of tape that chews up both trend and mean-reversion strategies</li>
-                            </ul>
-
-                            <p>We didn't hand-label these. The model finds them on its own by clustering how returns behave, which is the whole point: it adapts to whatever the data actually looks like instead of us imposing a definition of "trending" that might be wrong.</p>
-                        </section>
-
-                        <section>
-                            <h3 class="major">Training it</h3>
-                            <p>We train the HMM on historical price data, and in that process it works out three things at once: how often each state tends to show up, how likely the market is to jump from one state to another, and what returns and volatility typically look like once you're inside a given state.</p>
-
-                            <p>After that, it's fast. New data comes in, and the model updates its read on the current regime almost immediately.</p>
-                        </section>
-
-                        <section>
-                            <h3 class="major">Reading the output</h3>
-                            <p>The model hands back two things. First, its best guess at the current state: the single most likely regime right now. Second, the full probability breakdown across all three states, which matters more than it sounds like it should.</p>
-
-                            <p>A regime call at 90% confidence and one at 40% confidence should not lead to the same decision, even if they're pointing at the same state. That distinction is what actually drives how we think about strategy selection and risk from here.</p>
-                        </section>
-
-                        <section>
-                            <h3 class="major">What we're working on next</h3>
-                            <p>This page will keep growing as we refine the HMM and add new models alongside it. We're planning to add charts so you can actually see the regime shifts instead of just reading about them, along with a closer look at how each state behaves historically.</p>
-
-                            <p>Want to play with the interactive version? Head back to the homepage and check out the project section.</p>
+                            <p>To turn those dynamics into option prices, the model expresses the future log-price distribution through a characteristic function that satisfies the Heston pricing equation. The Carr-Madan transformation makes the pricing problem suitable for computation, and an inverse Fast Fourier Transform evaluates many strikes efficiently. Repeating that calculation across strikes and maturities produces the implied volatility surface.</p>
                         </section>
 
                     </div>
