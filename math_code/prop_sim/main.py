@@ -183,7 +183,10 @@ def render_prop_sim() -> None:
             run_button.props("loading")
             ui.notify("Running the historical replay and randomized paths…", type="info")
             try:
-                output = await run.cpu_bound(
+                # A thread keeps the UI responsive and works on constrained
+                # single-process hosts where process-pool workers may not be
+                # available or may exceed the memory limit.
+                output = await run.io_bound(
                     _calculate, int(timeframe.value), str(mc_mode.value), int(simulations.value), values
                 )
                 results.clear()
