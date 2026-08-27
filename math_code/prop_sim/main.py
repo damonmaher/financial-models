@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import csv
+import os
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -155,7 +156,8 @@ def render_prop_sim() -> None:
             "Research simulation only. Historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
         ui.label("Engine build: 2026").classes("text-xs text-slate-500")
-        ui.label("Diagnostic build: 3").classes("hidden")
+        ui.label("Diagnostic build: 4").classes("hidden")
+        ui.label(f"Process: {os.getpid()}").classes("hidden")
 
         with ui.card().classes("ps-card w-full p-5"):
             ui.label("Simulation setup").classes("text-2xl font-semibold")
