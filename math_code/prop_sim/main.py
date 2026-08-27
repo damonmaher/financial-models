@@ -220,7 +220,15 @@ def _histogram(values: List[float], bins: int = 20) -> Tuple[List[str], List[int
 
 CLIENT_RUN_SCRIPT = r"""
 async () => {
-    const results = document.querySelector('#prop-results');
+    const placeholder = document.querySelector('#prop-results');
+    let results = document.querySelector('#prop-results-output');
+    if (!results) {
+        results = document.createElement('div');
+        results.id = 'prop-results-output';
+        results.className = 'w-full max-w-7xl mx-auto px-4 md:px-8 pb-8';
+        const pageColumn = placeholder.closest('.nicegui-column');
+        pageColumn.parentElement.insertBefore(results, pageColumn.nextSibling);
+    }
     const button = document.querySelector('#run-prop-sim');
     const inputValue = (id) => {
         const node = document.querySelector(`#${id}`);
