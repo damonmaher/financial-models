@@ -8,7 +8,6 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Dict, List, Tuple
 
-import numpy as np
 from nicegui import ui
 
 from .models import Trade, row_to_trade
@@ -88,19 +87,28 @@ def _calculate(years: int, mode: str, simulations: int, values: Dict[str, float]
         rules_config=rules,
         sim_config=sim_config,
     )
-    nets = np.asarray([item["net_profit"] for item in summaries], dtype=float)
+    nets = [float(item["net_profit"]) for item in summaries]
+
+    def percentile(items: List[float], pct: float) -> float:
+        ordered = sorted(items)
+        position = (len(ordered) - 1) * pct
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        weight = position - lower
+        return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
     return {
         "historical": historical["financial_summary"],
         "monte_carlo": {
             "mean": float(mean(nets)),
             "median": float(median(nets)),
-            "p10": float(np.percentile(nets, 10)),
-            "p90": float(np.percentile(nets, 90)),
-            "profitable_pct": float(np.mean(nets > 0) * 100),
+            "p10": percentile(nets, 0.10),
+            "p90": percentile(nets, 0.90),
+            "profitable_pct": sum(value > 0 for value in nets) / len(nets) * 100.0,
             "mean_passes": float(mean(item["num_passes"] for item in summaries)),
             "mean_payouts": float(mean(item["num_payouts"] for item in summaries)),
             "mean_blows": float(mean(item["num_blows"] for item in summaries)),
-            "nets": nets.tolist(),
+            "nets": nets,
         },
         "start": start.strftime("%b %d, %Y"),
         "end": end.strftime("%b %d, %Y"),
@@ -114,9 +122,20 @@ def _money(value: float) -> str:
     return f"{sign}${abs(value):,.0f}"
 
 
-def render_prop_sim() -> None:
-    import plotly.graph_objects as go
+def _histogram(values: List[float], bins: int = 20) -> Tuple[List[str], List[int]]:
+    low, high = min(values), max(values)
+    if low == high:
+        return [_money(low)], [len(values)]
+    width = (high - low) / bins
+    counts = [0] * bins
+    for value in values:
+        index = min(int((value - low) / width), bins - 1)
+        counts[index] += 1
+    labels = [_money(low + (index + 0.5) * width) for index in range(bins)]
+    return labels, counts
 
+
+def render_prop_sim() -> None:
     ui.add_head_html("""
         <style>
             body { background: #07111f; color: #e8eef8; }
@@ -135,7 +154,7 @@ def render_prop_sim() -> None:
         ui.label(
             "Research simulation only — historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
-        ui.label("Engine build: 2026.08.27.1").classes("text-xs text-slate-500")
+        ui.label("Engine build: 2026.08.27.2").classes("text-xs text-slate-500")
 
         with ui.card().classes("ps-card w-full p-5"):
             ui.label("Simulation setup").classes("text-2xl font-semibold")
@@ -232,18 +251,28 @@ def render_prop_sim() -> None:
                                 with ui.column().classes("ps-stat p-4 gap-1"):
                                     ui.label(label).classes("text-xs uppercase tracking-wide text-slate-400")
                                     ui.label(value).classes("text-xl font-bold")
-                        figure = go.Figure(go.Histogram(x=mc["nets"], marker_color="#f59e0b", nbinsx=24))
-                        figure.update_layout(
-                            title="Distribution of simulated net results",
-                            xaxis_title="Net result ($)",
-                            yaxis_title="Paths",
-                            template="plotly_dark",
-                            paper_bgcolor="#101e31",
-                            plot_bgcolor="#101e31",
-                            margin=dict(l=45, r=20, t=55, b=45),
-                        )
-                        figure.add_vline(x=hist["net_profit"], line_dash="dash", line_color="#60a5fa", annotation_text="Historical")
-                        ui.plotly(figure).classes("w-full h-96")
+                        labels, counts = _histogram(mc["nets"], bins=20)
+                        ui.echart({
+                            "backgroundColor": "#101e31",
+                            "title": {"text": "Distribution of simulated net results", "textStyle": {"color": "#e8eef8"}},
+                            "tooltip": {"trigger": "axis"},
+                            "grid": {"left": 55, "right": 20, "top": 60, "bottom": 65},
+                            "xAxis": {
+                                "type": "category",
+                                "data": labels,
+                                "name": "Net result",
+                                "axisLabel": {"color": "#94a3b8", "rotate": 45},
+                                "nameTextStyle": {"color": "#94a3b8"},
+                            },
+                            "yAxis": {
+                                "type": "value",
+                                "name": "Paths",
+                                "axisLabel": {"color": "#94a3b8"},
+                                "nameTextStyle": {"color": "#94a3b8"},
+                                "splitLine": {"lineStyle": {"color": "#263a55"}},
+                            },
+                            "series": [{"type": "bar", "data": counts, "itemStyle": {"color": "#f59e0b"}}],
+                        }).classes("w-full h-96")
             except Exception as exc:
                 ui.notify(f"Simulation could not complete: {exc}", type="negative", timeout=0)
             finally:
