@@ -3,6 +3,7 @@
 from copy import deepcopy
 import asyncio
 import csv
+import json
 import os
 import random
 from datetime import datetime
@@ -11,7 +12,8 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Dict, List, Tuple
 
-from nicegui import ui
+from fastapi import Request
+from nicegui import app, ui
 
 from .models import Trade, row_to_trade
 from .monte_carlo import (
@@ -184,6 +186,21 @@ async def _calculate_cooperatively(
     }
 
 
+@app.post("/api/prop-sim")
+async def prop_sim_api(request: Request) -> Dict:
+    """Run over HTTP so the interactive page WebSocket remains idle."""
+    payload = await request.json()
+    years = int(payload["years"])
+    mode = str(payload["mode"])
+    simulations = int(payload["simulations"])
+    if years not in {1, 2, 3} or mode not in {"resample", "shuffle"}:
+        raise ValueError("Unsupported simulation selection")
+    if simulations not in {50, 100, 250}:
+        raise ValueError("Unsupported Monte Carlo path count")
+    values = {key: float(value) for key, value in payload["values"].items()}
+    return await _calculate_cooperatively(years, mode, simulations, values)
+
+
 def _money(value: float) -> str:
     sign = "-" if value < 0 else ""
     return f"{sign}${abs(value):,.0f}"
@@ -222,7 +239,7 @@ def render_prop_sim() -> None:
             "Research simulation only. Historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
         ui.label("Engine build: 2026").classes("text-xs text-slate-500")
-        ui.label("Diagnostic build: 5").classes("hidden")
+        ui.label("Diagnostic build: 6").classes("hidden")
         ui.label(f"Process: {os.getpid()}").classes("hidden")
 
         with ui.card().classes("ps-card w-full p-5"):
@@ -272,11 +289,21 @@ def render_prop_sim() -> None:
             run_button.props("loading")
             ui.notify("Running the historical replay and randomized paths…", type="info")
             try:
-                # Yield between Monte Carlo paths so the hosted WebSocket
-                # stays alive without spawning threads or worker processes.
-                output = await _calculate_cooperatively(
-                    int(timeframe.value), str(mc_mode.value), int(simulations.value), values
-                )
+                payload = json.dumps({
+                    "years": int(timeframe.value),
+                    "mode": str(mc_mode.value),
+                    "simulations": int(simulations.value),
+                    "values": values,
+                })
+                output = await ui.run_javascript(f"""
+                    const response = await fetch('/api/prop-sim', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({payload}),
+                    }});
+                    if (!response.ok) throw new Error(await response.text());
+                    return await response.json();
+                """, timeout=120.0)
                 results.clear()
                 with results:
                     ui.label(
