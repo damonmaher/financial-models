@@ -155,6 +155,7 @@ def render_prop_sim() -> None:
             "Research simulation only. Historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
         ui.label("Engine build: 2026").classes("text-xs text-slate-500")
+        ui.label("Diagnostic build: 3").classes("hidden")
 
         with ui.card().classes("ps-card w-full p-5"):
             ui.label("Simulation setup").classes("text-2xl font-semibold")
@@ -274,6 +275,11 @@ def render_prop_sim() -> None:
                             "series": [{"type": "bar", "data": counts, "itemStyle": {"color": "#f59e0b"}}],
                         }).classes("w-full h-96")
             except Exception as exc:
+                results.clear()
+                with results:
+                    with ui.card().classes("ps-card w-full p-5 border-red-500"):
+                        ui.label("Simulation error").classes("text-xl font-semibold text-red-300")
+                        ui.label(f"{type(exc).__name__}: {exc}").classes("text-sm text-red-200")
                 ui.notify(f"Simulation could not complete: {exc}", type="negative", timeout=0)
             finally:
                 run_button.enable()
