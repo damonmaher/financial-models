@@ -192,9 +192,9 @@ async def prop_sim_api(request: Request) -> Dict:
     years = int(payload["years"])
     mode = str(payload["mode"])
     simulations = int(payload["simulations"])
-    if years not in {1, 2, 3} or mode not in {"resample", "shuffle"}:
+    if years != 1 or mode not in {"resample", "shuffle"}:
         raise ValueError("Unsupported simulation selection")
-    if simulations not in {50, 100, 250}:
+    if simulations != 50:
         raise ValueError("Unsupported Monte Carlo path count")
     values = {key: float(value) for key, value in payload["values"].items()}
     return await _calculate_cooperatively(years, mode, simulations, values)
@@ -336,7 +336,7 @@ def render_prop_sim() -> None:
             with ui.grid().classes("w-full grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"):
                 ui.select(STRATEGY_OPTIONS, value=STRATEGY_OPTIONS[0], label="Evaluation strategy").classes("w-full")
                 ui.select(STRATEGY_OPTIONS, value=STRATEGY_OPTIONS[0], label="Funded strategy").classes("w-full")
-                timeframe = ui.select({1: "1 year", 2: "2 years", 3: "3 years"}, value=3, label="Historical timeframe").props("id=timeframe").classes("w-full")
+                timeframe = ui.select({1: "1 year"}, value=1, label="Historical timeframe").props("id=timeframe").classes("w-full")
                 mc_mode = ui.select(
                     {"resample": "Bootstrap — with replacement", "shuffle": "Shuffle — without replacement"},
                     value="resample",
@@ -364,7 +364,7 @@ def render_prop_sim() -> None:
                 for key, (label, value, step) in defaults.items():
                     fields[key] = ui.number(label=label, value=value, min=1, step=step).classes(f"field-{key} w-full")
 
-            simulations = ui.select({50: "50 paths", 100: "100 paths", 250: "250 paths"}, value=100, label="Monte Carlo paths").props("id=simulations").classes("w-64")
+            simulations = ui.select({50: "50 paths"}, value=50, label="Monte Carlo paths").props("id=simulations").classes("w-64")
             run_button = ui.button("Run historical + Monte Carlo simulation", icon="play_arrow").props("id=run-prop-sim unelevated color=orange")
 
         ui.element("div").props("id=prop-results").classes("w-full")
