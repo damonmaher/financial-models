@@ -24,7 +24,7 @@
                     <ul class="links">
                         <li><a href="index.html">Home</a></li>
                         <li><a href="generic.html">About</a></li>
-                        <li><a href="elements.html">Model Explanation</a></li>
+                        <li><a href="#models">Models</a></li>
                     </ul>
                     <a href="#" class="close">Close</a>
                 </div>
@@ -48,6 +48,8 @@
                         <div class="content">
                             <h2 class="major">Who We Are</h2>
                             <p>We're Damon Maher and Alec Mahini. This site is where we post the financial models we're building, mostly around regime detection, volatility structure, and market state classification.</p>
+                            <p><strong>Damon:</strong> First year Echols scholar at UVA on pre-commerce track.<br />
+                            <strong>Alec:</strong> First year at UVA studying math and statistics.</p>
                             <p>We try to keep everything here interpretable enough that we could explain it to each other, or to anyone else, without hand waving.</p>
                             <a href="generic.html" class="special">Learn more</a>
                         </div>
@@ -61,72 +63,73 @@
                         <div class="content">
                             <h2 class="major">Hidden Markov Model</h2>
                             <p>Our first project is a Hidden Markov Model built for market regime detection. It estimates which state the market is probably in, whether that's trending, mean reverting, or volatile, using probabilistic inference instead of a visual read on a chart.</p>
-                            <p>The explanation page walks through the math, the intuition behind it, and how we implemented it.</p>
-                            <a href="elements.html" class="special">Read the explanation</a>
+                            <p>Use the live model to explore market regimes, or open the research notebook for the full mathematical explanation.</p>
+                            <ul class="actions">
+                                <li><a href="https://financial-models-qwzk.onrender.com/hmm" class="button primary" target="_blank" rel="noopener noreferrer">Open live HMM model</a></li>
+                                <li><a href="https://github.com/damonmaher/financial-models/blob/main/math_code/notebooks/HMM.ipynb" class="button" target="_blank" rel="noopener noreferrer">Read HMM notebook</a></li>
+                            </ul>
                         </div>
                     </div>
                 </section>
 
-                <!-- Placeholder for Future Projects -->
+                <!-- Heston Stochastic Volatility -->
                 <section id="three" class="wrapper spotlight style3">
                     <div class="inner">
                         <a class="image"><img src="images/pic03.jpg" alt="" /></a>
                         <div class="content">
-                            <h2 class="major">Upcoming Models</h2>
-                            <p>We're currently working on models for volatility clustering, macro regime classification, and detecting structural shifts in the market. We'll add them here as they're finished.</p>
-                            <a href="#" class="special">Coming soon</a>
+                            <h2 class="major">Heston Stochastic Volatility</h2>
+                            <p>Explore an implied volatility surface built with the Heston framework, or read the accompanying notebook for the model's derivation and intuition.</p>
+                            <ul class="actions">
+                                <li><a href="https://financial-models-qwzk.onrender.com/hsv" class="button primary" target="_blank" rel="noopener noreferrer">Open live HSV model</a></li>
+                                <li><a href="https://github.com/damonmaher/financial-models/blob/main/math_code/notebooks/HSV.ipynb" class="button" target="_blank" rel="noopener noreferrer">Read HSV notebook</a></li>
+                            </ul>
                         </div>
                     </div>
                 </section>
 
                 <!-- Project Grid -->
-                <section id="four" class="wrapper alt style1">
+                <section id="models" class="wrapper alt style1">
                     <div class="inner">
                         <h2 class="major">Our Projects</h2>
-                        <p>A growing collection of models and research. The HMM is live now, with more on the way.</p>
+                        <p>Each project includes a live interactive model and a research notebook explaining the mathematics behind it.</p>
 
                         <section class="features">
 
-                            <!-- Project 1: HMM Interactive Embed -->
+                            <!-- Project 1: Hidden Markov Model -->
                             <article>
-                                <a class="image"><img src="images/pic04.jpg" alt="" /></a>
-                                <h3 class="major">Hidden Markov Model: Interactive</h3>
-                                <p>This will hold the live, interactive version of the model. You'll be able to input data, watch regime transitions play out, and look at state probabilities directly.</p>
-                                <p><strong>Embed placeholder:</strong></p>
-                                <div style="border: 2px dashed #ccc; padding: 20px; text-align: center;">
-                                    <p>Model embed coming soon</p>
-                                </div>
+                                <a href="https://financial-models-qwzk.onrender.com/hmm" class="image" target="_blank" rel="noopener noreferrer"><img src="images/pic04.jpg" alt="Open the Hidden Markov Model" /></a>
+                                <h3 class="major">Hidden Markov Model</h3>
+                                <p>Estimate likely market regimes and inspect their state probabilities through the live interactive interface.</p>
+                                <ul class="actions">
+                                    <li><a href="https://financial-models-qwzk.onrender.com/hmm" class="button primary" target="_blank" rel="noopener noreferrer">Launch model</a></li>
+                                </ul>
+                                <a href="https://github.com/damonmaher/financial-models/blob/main/math_code/notebooks/HMM.ipynb" class="special" target="_blank" rel="noopener noreferrer">Read the HMM notebook</a>
                             </article>
 
-                            <!-- Project 2: HMM Explanation -->
+                            <!-- Project 2: Black-Litterman -->
                             <article>
-                                <a class="image"><img src="images/pic05.jpg" alt="" /></a>
-                                <h3 class="major">Hidden Markov Model: Explanation</h3>
-                                <p>A full breakdown of the model's structure, the math behind it, the intuition, and how we built it.</p>
-                                <a href="elements.html" class="special">Read explanation</a>
+                                <a href="https://financial-models-qwzk.onrender.com/bl" class="image" target="_blank" rel="noopener noreferrer"><img src="images/pic05.jpg" alt="Open the Black-Litterman Model" /></a>
+                                <h3 class="major">Black-Litterman Model</h3>
+                                <p>Combine market equilibrium returns with investor views to explore diversified portfolio allocations.</p>
+                                <ul class="actions">
+                                    <li><a href="https://financial-models-qwzk.onrender.com/bl" class="button primary" target="_blank" rel="noopener noreferrer">Launch model</a></li>
+                                </ul>
+                                <a href="https://github.com/damonmaher/financial-models/blob/main/math_code/notebooks/Diversification.ipynb" class="special" target="_blank" rel="noopener noreferrer">Read the portfolio notebook</a>
                             </article>
 
-                            <!-- Project 3: Future Project -->
+                            <!-- Project 3: Heston Stochastic Volatility -->
                             <article>
-                                <a class="image"><img src="images/pic06.jpg" alt="" /></a>
-                                <h3 class="major">Future Project 1</h3>
-                                <p>This slot is reserved for our next model. We'll fill in details as we build it out.</p>
-                                <a href="#" class="special">Coming soon</a>
-                            </article>
-
-                            <!-- Project 4: Future Project -->
-                            <article>
-                                <a class="image"><img src="images/pic07.jpg" alt="" /></a>
-                                <h3 class="major">Future Project 2</h3>
-                                <p>Another model on the way, likely something to do with market structure, volatility, or macro state inference.</p>
-                                <a href="#" class="special">Coming soon</a>
+                                <a href="https://financial-models-qwzk.onrender.com/hsv" class="image" target="_blank" rel="noopener noreferrer"><img src="images/pic06.jpg" alt="Open the Heston Stochastic Volatility Model" /></a>
+                                <h3 class="major">Heston Stochastic Volatility</h3>
+                                <p>Explore how stochastic variance shapes implied volatility surfaces and option values.</p>
+                                <ul class="actions">
+                                    <li><a href="https://financial-models-qwzk.onrender.com/hsv" class="button primary" target="_blank" rel="noopener noreferrer">Launch model</a></li>
+                                </ul>
+                                <a href="https://github.com/damonmaher/financial-models/blob/main/math_code/notebooks/HSV.ipynb" class="special" target="_blank" rel="noopener noreferrer">Read the HSV notebook</a>
                             </article>
 
                         </section>
 
-                        <ul class="actions">
-                            <li><a href="#" class="button">Browse All</a></li>
-                        </ul>
                     </div>
                 </section>
 
