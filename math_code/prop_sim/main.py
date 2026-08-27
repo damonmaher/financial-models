@@ -320,7 +320,7 @@ def render_prop_sim() -> None:
             "Research simulation only. Historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
         ui.label("Engine build: 2026").classes("text-xs text-slate-500")
-        ui.label("Diagnostic build: 7").classes("hidden")
+        ui.label("Diagnostic build: 8").classes("hidden")
         ui.label(f"Process: {os.getpid()}").classes("hidden")
 
         with ui.card().classes("ps-card w-full p-5"):
@@ -359,5 +359,5 @@ def render_prop_sim() -> None:
             simulations = ui.select({50: "50 paths", 100: "100 paths", 250: "250 paths"}, value=100, label="Monte Carlo paths").props("id=simulations").classes("w-64")
             run_button = ui.button("Run historical + Monte Carlo simulation", icon="play_arrow").props("id=run-prop-sim unelevated color=orange")
 
-        ui.html('<div id="prop-results" class="w-full"></div>').classes("w-full")
+        ui.element("div").props("id=prop-results").classes("w-full")
         run_button.on("click", js_handler=CLIENT_RUN_SCRIPT)
