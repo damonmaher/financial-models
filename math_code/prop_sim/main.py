@@ -9,7 +9,7 @@ from statistics import mean, median
 from typing import Dict, List, Tuple
 
 import numpy as np
-from nicegui import run, ui
+from nicegui import ui
 
 from .models import Trade, row_to_trade
 from .monte_carlo import run_monte_carlo_summaries
@@ -183,11 +183,11 @@ def render_prop_sim() -> None:
             run_button.props("loading")
             ui.notify("Running the historical replay and randomized paths…", type="info")
             try:
-                # A thread keeps the UI responsive and works on constrained
-                # single-process hosts where process-pool workers may not be
-                # available or may exceed the memory limit.
-                output = await run.io_bound(
-                    _calculate, int(timeframe.value), str(mc_mode.value), int(simulations.value), values
+                # The calculation is intentionally compact and completes in a
+                # few seconds. Running it in-process avoids worker creation on
+                # constrained single-process hosting plans.
+                output = _calculate(
+                    int(timeframe.value), str(mc_mode.value), int(simulations.value), values
                 )
                 results.clear()
                 with results:
