@@ -6,6 +6,8 @@ from pathlib import Path
 
 from nicegui import ui
 
+from math_code.prop_sim.main import render_prop_sim
+
 
 # ============================================================
 # MODEL EMBEDDING
@@ -189,6 +191,11 @@ def home():
         "/hsv",
     ).classes("block mb-2 text-blue-500")
 
+    ui.link(
+        "Prop Firm Strategy Simulator",
+        "/prop-sim",
+    ).classes("block mb-2 text-blue-500")
+
 
 # ============================================================
 # BLACK-LITTERMAN
@@ -215,6 +222,15 @@ def hmm_page():
 @ui.page("/hsv")
 def hsv_page():
     _run_original_model("hsv")
+
+
+# ============================================================
+# PROP FIRM STRATEGY SIMULATOR
+# ============================================================
+
+@ui.page("/prop-sim")
+def prop_sim_page():
+    render_prop_sim()
 
 
 # ============================================================
