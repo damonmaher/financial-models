@@ -64,6 +64,15 @@
                             <p>To turn those dynamics into option prices, the model expresses the future log-price distribution through a characteristic function that satisfies the Heston pricing equation. The Carr-Madan transformation makes the pricing problem suitable for computation, and an inverse Fast Fourier Transform evaluates many strikes efficiently. Repeating that calculation across strikes and maturities produces the implied volatility surface.</p>
                         </section>
 
+                        <section>
+                            <h3 class="major">Prop Firm Strategy Simulator</h3>
+                            <p>The simulator treats an account as a sequence of states: evaluation, funded, reset, payout, or failure. It reads completed trades from separate built-in evaluation and funded logs, counts only each trade's exit row, and updates account equity with its realized profit or loss. During evaluation it applies the selected profit target, daily-loss limit, trailing drawdown, minimum trading days, and best-day consistency rule. A pass starts a fresh funded account; an evaluation failure charges the selected reset fee.</p>
+
+                            <p>In the funded state, the replay applies the funded daily and maximum-loss limits and checks whether the selected winning-day and payout thresholds have been met. The historical result is total simulated payouts minus evaluation reset fees. The chosen 1-, 2-, or 3-year window ends at the latest timestamp in the included trade data.</p>
+
+                            <p>The Monte Carlo comparison measures path sensitivity. Shuffling without replacement uses every observed trade outcome exactly once but changes its order, isolating sequence risk. Bootstrap resampling draws outcomes with replacement, so individual trades may recur or disappear and both order and composition change. The distribution of net results summarizes these randomized paths; it is conditional on the supplied logs and rules and is not a forecast.</p>
+                        </section>
+
                     </div>
                 </div>
 
