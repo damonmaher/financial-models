@@ -1,8 +1,10 @@
 """Interactive prop-firm historical and Monte Carlo simulator."""
 
 from copy import deepcopy
+import asyncio
 import csv
 import os
+import random
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -12,7 +14,11 @@ from typing import Dict, List, Tuple
 from nicegui import ui
 
 from .models import Trade, row_to_trade
-from .monte_carlo import run_monte_carlo_summaries
+from .monte_carlo import (
+    resample_trades_with_replacement,
+    run_monte_carlo_summaries,
+    shuffle_trades_no_replacement,
+)
 from .rules import DEFAULT_RULES
 from .simulator import run_simulation
 
@@ -118,6 +124,66 @@ def _calculate(years: int, mode: str, simulations: int, values: Dict[str, float]
     }
 
 
+async def _calculate_cooperatively(
+    years: int, mode: str, simulations: int, values: Dict[str, float]
+) -> Dict:
+    """Calculate in small chunks so the hosted WebSocket remains responsive."""
+    eval_trades, funded_trades, start, end = _trade_window(years)
+    rules = _rules_from_inputs(values)
+    sim_config = {"reset_fee": values["reset_fee"]}
+    historical = run_simulation(
+        eval_trades, funded_trades, values["starting_balance"], rules, sim_config
+    )["financial_summary"]
+
+    transform = (
+        shuffle_trades_no_replacement
+        if mode == "shuffle"
+        else resample_trades_with_replacement
+    )
+    random.seed(17)
+    summaries = []
+    for index in range(simulations):
+        result = run_simulation(
+            transform(eval_trades),
+            transform(funded_trades),
+            values["starting_balance"],
+            rules,
+            sim_config,
+        )
+        summaries.append(result["financial_summary"])
+        if index % 2 == 1:
+            await asyncio.sleep(0.001)
+
+    nets = [float(item["net_profit"]) for item in summaries]
+
+    def percentile(items: List[float], pct: float) -> float:
+        ordered = sorted(items)
+        position = (len(ordered) - 1) * pct
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        weight = position - lower
+        return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+    return {
+        "historical": historical,
+        "monte_carlo": {
+            "mean": float(mean(nets)),
+            "median": float(median(nets)),
+            "p10": percentile(nets, 0.10),
+            "p90": percentile(nets, 0.90),
+            "profitable_pct": sum(value > 0 for value in nets) / len(nets) * 100.0,
+            "mean_passes": float(mean(item["num_passes"] for item in summaries)),
+            "mean_payouts": float(mean(item["num_payouts"] for item in summaries)),
+            "mean_blows": float(mean(item["num_blows"] for item in summaries)),
+            "nets": nets,
+        },
+        "start": start.strftime("%b %d, %Y"),
+        "end": end.strftime("%b %d, %Y"),
+        "eval_count": len(eval_trades),
+        "funded_count": len(funded_trades),
+    }
+
+
 def _money(value: float) -> str:
     sign = "-" if value < 0 else ""
     return f"{sign}${abs(value):,.0f}"
@@ -156,7 +222,7 @@ def render_prop_sim() -> None:
             "Research simulation only. Historical and randomized outcomes are not forecasts."
         ).classes("text-sm text-amber-300")
         ui.label("Engine build: 2026").classes("text-xs text-slate-500")
-        ui.label("Diagnostic build: 4").classes("hidden")
+        ui.label("Diagnostic build: 5").classes("hidden")
         ui.label(f"Process: {os.getpid()}").classes("hidden")
 
         with ui.card().classes("ps-card w-full p-5"):
@@ -206,10 +272,9 @@ def render_prop_sim() -> None:
             run_button.props("loading")
             ui.notify("Running the historical replay and randomized paths…", type="info")
             try:
-                # The calculation is intentionally compact and completes in a
-                # few seconds. Running it in-process avoids worker creation on
-                # constrained single-process hosting plans.
-                output = _calculate(
+                # Yield between Monte Carlo paths so the hosted WebSocket
+                # stays alive without spawning threads or worker processes.
+                output = await _calculate_cooperatively(
                     int(timeframe.value), str(mc_mode.value), int(simulations.value), values
                 )
                 results.clear()
